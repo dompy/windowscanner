@@ -126,7 +126,7 @@ def ask_openai(prompt: str) -> str:
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "Du bist ein medizinischer Assistent."},
+                {"role": "system", "content": "Du bist ein medizinischer Assistent. Du antwortest konzise und versuchst stets, die wichtigsten Informationen zu liefern."},
                 {"role": "user", "content": prompt}
             ]
         )
