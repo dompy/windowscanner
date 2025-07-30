@@ -1,0 +1,43 @@
+# --- Virtuelle Umgebungen ---
+.venv/
+venv/
+ENV/
+env/
+
+# --- Python Cache / Bytecode ---
+__pycache__/
+*.py[cod]
+*.pyc
+*$py.class
+
+# --- Log- und temporäre Dateien ---
+*.log
+*.tmp
+*.bak
+*.swp
+*.DS_Store
+
+# --- OS-/Editor-spezifisch ---
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# --- Testdaten / Screenshots ---
+*.png
+*.jpg
+*.jpeg
+
+# --- Ergebnisdateien / Screenshots ---
+/tmp/
+window_scanner_output.txt
+
+# --- Projektinterne Daten (z. B. PDF- oder Word-Originale) ---
+*.docx
+*.pdf
+
+# --- User-spezifische Konfigs ---
+.env
+*.key
+*.pem
+
