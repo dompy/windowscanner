@@ -41,3 +41,16 @@ window_scanner_output.txt
 *.key
 *.pem
 
+# Temporärer Arbeitsordner des Tools
+/tmp/window_scanner/
+
+# Jupyter oder IPython Notebooks
+*.ipynb
+
+# macOS Finder Datei
+.Icon?
+
+# PyCharm zusätzliche Cache-Ordner
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+
