@@ -1,3 +1,5 @@
+# ui_assistant.py
+
 import tkinter as tk
 from tkinter import scrolledtext
 import threading

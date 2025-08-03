@@ -1,3 +1,5 @@
+# red_flags_checker.py
+
 import json
 from typing import List
 
@@ -7,11 +9,15 @@ def load_red_flags(filepath: str) -> List[dict]:
         return json.load(f)
 
 # Funktion zur Überprüfung der Anamnese anhand der geladenen Red-Flags
-def check_red_flags(anamnese: str, red_flags_data: List[dict]) -> List[str]:
+def check_red_flags(anamnese: str, red_flags_data: List[dict], return_keywords: bool = False) -> List:
     flags = []
     anamnese_lower = anamnese.lower()
     for rule in red_flags_data:
-        match_count = sum(1 for keyword in rule["keywords"] if keyword.lower() in anamnese_lower)
-        if match_count >= 1:  # mindestens 1 passendes Stichwort einer Regelgruppe
-            flags.append(rule["message"])
+        for keyword in rule["keywords"]:
+            if keyword.lower() in anamnese_lower:
+                if return_keywords:
+                    flags.append((keyword, rule["message"]))
+                else:
+                    flags.append(rule["message"])
+                break  # Nur eine Meldung pro Regel
     return flags

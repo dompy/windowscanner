@@ -1,42 +1,42 @@
 [
   {
     "keywords": ["Thoraxschmerz", "Thoraxschmerzen", "Atemnot", "Dyspnoe"],
-    "message": "→ Ausschluss akutes Koronarsyndrom (ACS) oder Lungenembolie (LE) erforderlich"
+    "message": "Ausschluss akutes Koronarsyndrom (ACS) oder Lungenembolie (LE) erforderlich"
   },
   {
     "keywords": ["Fieber", "Nackensteifigkeit", "Photophobie"],
-    "message": "→ Verdacht auf Meningitis, sofortige Diagnostik und ggf. antibiotische Therapie"
+    "message": "Verdacht auf Meningitis, sofortige Diagnostik und ggf. antibiotische Therapie"
   },
   {
     "keywords": ["bewusstlos", "Synkope", "Palpitationen", "Herzrasen"],
-    "message": "→ Ausschluss kardiale Ursache (z. B. Arrhythmie, strukturelle Herzerkrankung)"
+    "message": "Ausschluss kardiale Ursache (z. B. Arrhythmie, strukturelle Herzerkrankung)"
   },
   {
     "keywords": ["plötzlicher Kopfschmerz", "Übelkeit", "Nackensteifigkeit"],
-    "message": "→ Mögliche Subarachnoidalblutung, notfallmässige Abklärung notwendig"
+    "message": "Mögliche Subarachnoidalblutung, notfallmässige Abklärung notwendig"
   },
   {
     "keywords": ["Gewichtsverlust", "Nachtschweiss", "Fieber"],
-    "message": "→ Hinweis auf chronisch entzündliche oder maligne Erkrankung"
+    "message": "Hinweis auf chronisch entzündliche oder maligne Erkrankung"
   },
   {
     "keywords": ["Schwindel", "Gangunsicherheit", "Doppelbilder"],
-    "message": "→ Verdacht auf Hirnstamminfarkt, neurologische Abklärung"
+    "message": "Verdacht auf Hirnstamminfarkt, neurologische Abklärung"
   },
   {
     "keywords": ["Blut im Stuhl", "Gewichtsverlust"],
-    "message": "→ Ausschluss Kolorektales Karzinom"
+    "message": "Ausschluss Kolorektales Karzinom"
   },
   {
     "keywords": ["Heiserkeit", "Halsweh", "Dyspnoe"],
-    "message": "→ Ausschluss Epiglottitis oder Kehlkopfbeteiligung"
+    "message": "Ausschluss Epiglottitis oder Kehlkopfbeteiligung"
   },
   {
     "keywords": ["starke Rückenschmerzen", "Fieber", "Lähmung"],
-    "message": "→ Verdacht auf spinale Abszesse oder Cauda-equina-Syndrom"
+    "message": "Verdacht auf spinale Abszesse oder Cauda-equina-Syndrom"
   },
   {
     "keywords": ["Bauchschmerz", "Abwehrspannung", "Fieber"],
-    "message": "→ Mögliche Peritonitis, chirurgische Abklärung erwägen"
+    "message": "Mögliche Peritonitis, chirurgische Abklärung erwägen"
   }
 ]

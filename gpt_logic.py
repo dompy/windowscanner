@@ -1,3 +1,5 @@
+#gpt_logic.py
+
 import os
 from openai import OpenAI
 from red_flags_checker import check_red_flags, load_red_flags
@@ -45,10 +47,10 @@ Was ist die wahrscheinlichste Diagnose bzw. ärztliche Beurteilung?"""
     return ask_openai(prompt)
 
 def generate_procedure(beurteilung: str, befunde: str, anamnese: str) -> str:
-    red_flags = check_red_flags(anamnese, red_flags_data)
+    red_flags = check_red_flags(anamnese, red_flags_data, return_keywords=True)
     red_flag_note = ""
     if red_flags:
-        red_flag_note = "⚠️ Red Flag(s):\n" + "\n".join([f"{flag} - " for flag in red_flags]) + "\n\n"
+        red_flag_note = "⚠️ Red Flag(s):\n" + "\n".join([f"{keyword} → {message}" for keyword, message in red_flags]) + "\n\n"
 
     prompt = f"""{PROMPT_PREFIX}\n\nBeurteilung:\n{beurteilung}\n\nBefunde:\n{befunde}\n
 Liste stichwortartig ein empfohlenes Prozedere auf. Was wurde mit dem Patienten abgemacht? Welche Medikation wird abgegeben? Wann ist eine Verlaufskontrolle geplant? In welchen Fällen sollte er sich vorzeitig melden? Welche weiteren Abklärungen sind sinnvoll, falls keine Besserung eintritt? Bitte strukturiert antworten."""
