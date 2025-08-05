@@ -1,42 +1,100 @@
-[
-  {
-    "keywords": ["Thoraxschmerz", "Thoraxschmerzen", "Atemnot", "Dyspnoe"],
-    "message": "→ Ausschluss akutes Koronarsyndrom (ACS) oder Lungenembolie (LE) erforderlich"
-  },
-  {
-    "keywords": ["Fieber", "Nackensteifigkeit", "Photophobie"],
-    "message": "→ Verdacht auf Meningitis, sofortige Diagnostik und ggf. antibiotische Therapie"
-  },
-  {
-    "keywords": ["bewusstlos", "Synkope", "Palpitationen", "Herzrasen"],
-    "message": "→ Ausschluss kardiale Ursache (z. B. Arrhythmie, strukturelle Herzerkrankung)"
-  },
-  {
-    "keywords": ["plötzlicher Kopfschmerz", "Übelkeit", "Nackensteifigkeit"],
-    "message": "→ Mögliche Subarachnoidalblutung, notfallmässige Abklärung notwendig"
-  },
-  {
-    "keywords": ["Gewichtsverlust", "Nachtschweiss", "Fieber"],
-    "message": "→ Hinweis auf chronisch entzündliche oder maligne Erkrankung"
-  },
-  {
-    "keywords": ["Schwindel", "Gangunsicherheit", "Doppelbilder"],
-    "message": "→ Verdacht auf Hirnstamminfarkt, neurologische Abklärung"
-  },
-  {
-    "keywords": ["Blut im Stuhl", "Gewichtsverlust"],
-    "message": "→ Ausschluss Kolorektales Karzinom"
-  },
-  {
-    "keywords": ["Heiserkeit", "Halsweh", "Dyspnoe"],
-    "message": "→ Ausschluss Epiglottitis oder Kehlkopfbeteiligung"
-  },
-  {
-    "keywords": ["starke Rückenschmerzen", "Fieber", "Lähmung"],
-    "message": "→ Verdacht auf spinale Abszesse oder Cauda-equina-Syndrom"
-  },
-  {
-    "keywords": ["Bauchschmerz", "Abwehrspannung", "Fieber"],
-    "message": "→ Mögliche Peritonitis, chirurgische Abklärung erwägen"
-  }
-]
+{
+  "Kardiopulmonal": [
+    {
+      "keywords": ["Thoraxschmerz", "Thoraxschmerzen", "Atemnot", "Dyspnoe"],
+      "message": "Exclude ACS, PE, aortic dissection, pneumothorax etc.; ECG, troponin, D-dimer, imaging"
+    },
+    {
+      "keywords": ["Orthopnoe", "Husten", "Rasselgeräusche"],
+      "message": "Exclude acute HF, pneumonia, PE; CXR, BNP, ABG"
+    },
+    {
+      "keywords": ["Zyanose", "Tachypnoe", "Einziehungen", "Krupp", "Stridor"],
+      "message": "Signs of upper airway obstruction; emergency airway"
+    },
+    {
+      "keywords": ["Hämoptyse", "Dyspnoe", "Thoraxschmerz"],
+      "message": "Exclude PE, lung cancer, TB, pneumonia; chest imaging and labs"
+    }
+  ],
+  "Neurologisch": [
+    {
+      "keywords": ["Fieber", "Nackensteifigkeit", "Photophobie"],
+      "message": "Suspect meningitis; neuroimaging, LP, empirical antibiotics"
+    },
+    {
+      "keywords": ["Stärkster Kopfschmerz", "Meningismus", "Meningitis", "Nackensteifigkeit"],
+      "message": "Suspect SAH; emergency CT/MRI and LP"
+    },
+    {
+      "keywords": ["epileptischer Anfall", "neurologische Ausfälle"],
+      "message": "Suspect herpes encephalitis; LP and IV acyclovir"
+    },
+    {
+      "keywords": ["Schwäche", "Sprachstörung", "Gesichtslähmung"],
+      "message": "Suspect stroke; urgent CT/MRI"
+    },
+    {
+      "keywords": ["Schwindel", "Gangunsicherheit", "Doppelbilder"],
+      "message": "Suspect brainstem/cerebellar stroke; MRI"
+    }
+  ],
+  "Infektiologisch": [
+    {
+      "keywords": ["Petechien", "Purpura", "Hautblutung"],
+      "message": "Suspect meningococcemia, DIC; labs and ICU monitoring"
+    },
+    {
+      "keywords": ["Immunsuppression", "Chemotherapie", "Neutropenie"],
+      "message": "Fever in neutropenia is an emergency; empirical AB and isolation"
+    },
+    {
+      "keywords": ["Reise", "Tropen", "Malaria", "Endemiegebiet"],
+      "message": "Fever post travel: exclude malaria, dengue, etc.; tropical med eval"
+    }
+  ],
+  "Gastrointestinal": [
+    {
+      "keywords": ["Blut im Stuhl", "Melena", "Hämatochezie"],
+      "message": "Exclude colorectal carcinoma or GI bleeding; colonoscopy"
+    },
+    {
+      "keywords": ["starke Bauchschmerzen"],
+      "message": "Exclude acute abdomen; urgent surgical eval"
+    }
+  ],
+  "Urogenital": [
+    {
+      "keywords": ["Anurie", "Oligurie", "Hämaturie", "Ödeme"],
+      "message": "Exclude renal failure, glomerulonephritis; labs and sonography"
+    }
+  ],
+  "Rheumatologisch / Dermatologisch": [
+    {
+      "keywords": ["plötzlicher Hautausschlag", "systemische Symptome"],
+      "message": "Exclude DRESS, SJS etc.; dermatologic/internal eval"
+    }
+  ],
+  "Kardial": [
+    {
+      "keywords": ["Bewusstlos", "Synkope", "Palpitationen", "Herzrasen"],
+      "message": "Exclude cardiac causes; ECG, monitoring, echocardiography"
+    },
+    {
+      "keywords": ["Herzgeräusch", "Embolien", "Splenomegalie"],
+      "message": "Suspect endocarditis; echo and blood cultures"
+    }
+  ],
+  "Wirbelsäule / Neurologie": [
+    {
+      "keywords": ["Rückenschmerzen", "Klopfdolenz", "Lähmung", "Urininkontinenz"],
+      "message": "Suspect spinal abscess or cauda equina; emergency MRI"
+    }
+  ],
+  "Onkologie / Systemisch": [
+    {
+      "keywords": ["Gewichtsverlust", "Nachtschweiss", "unklares Fieber"],
+      "message": "Consider TB, lymphoma, chronic inflammation; imaging, labs, biopsy"
+    }
+  ]
+}
