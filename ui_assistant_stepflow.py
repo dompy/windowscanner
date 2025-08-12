@@ -1,251 +1,279 @@
+import os
 import tkinter as tk
+from gpt_logic import generate_befunde_gaptext_german
 from tkinter import scrolledtext, messagebox
-import threading
-import time
 
-from word_reader import get_word_text, get_active_word_path_via_applescript
-from red_flags_checker import load_red_flags
+# Wir nutzen NUR das Tool – keine Word-Integration
 from gpt_logic import (
-    generate_follow_up_questions,
-    generate_relevant_findings,
-    generate_assessment_from_differential,
-    generate_procedure,
-    generate_differential_diagnoses
+    generate_anamnese_gaptext_german,
+    suggest_basic_exams_german,
+    generate_assessment_and_plan_german,
+    generate_full_entries_german,
 )
 
-def extract_section(text: str, header: str) -> str:
-    known_headers = {"Anamnese", "Befunde", "Beurteilung", "Prozedere"}
-    lines = text.splitlines()
-    section = []
-    recording = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped.lower().startswith(header.lower()):
-            recording = True
-            continue
-        elif recording and any(stripped.lower().startswith(h.lower()) for h in known_headers if h.lower() != header.lower()):
-            break
-        elif recording:
-            section.append(stripped)
-    return "\n".join(section).strip()
+# Red Flags separat im UI anzeigen
+try:
+    from red_flags_checker import load_red_flags, check_red_flags
+except Exception:
+    load_red_flags = None
+    check_red_flags = None
+
 
 class ConsultationAssistant:
-    def __init__(self, root):
+    def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("🧠 KI-Konsultationsassistent – Schritt-für-Schritt")
-        self.root.configure(bg="#2e2e2e")
+        self.root.title("🧠 Praxis-Assistent (ohne Word)")
+        self.root.geometry("1000x800")
+        self.root.configure(bg="#222")
 
-        # interner Zustand
-        self.active = False
-        self.current_anamnese = ""
-        self.current_befunde = ""
+        self.fields = {}  # "Anamnese", "Befunde", "Beurteilung", "Prozedere"
 
-        # Kopfzeile / Steuerung
-        header = tk.Frame(root, bg="#2e2e2e")
-        header.pack(fill="x", pady=(8, 6))
+        # ---------- Layout ----------
+        # Anamnese (frei)
+        self._label("Anamnese (frei)")
+        self.fields["Anamnese"] = self._text(height=6)
 
-        self.toggle_button = tk.Button(header, text="🔴 Live-Abgleich AUS", command=self.toggle, bg="white")
-        self.toggle_button.pack(side="left", padx=8)
+        # 1) Lückentext
+        self._button("1) Lückentext erzeugen (integriert)", self.on_gaptext)
 
-        self.refresh_button = tk.Button(header, text="🔄 Word jetzt einlesen", command=self.refresh_from_word)
-        self.refresh_button.pack(side="left")
+        self._label("Anamnese – Lückentext (editierbar)")
+        self.txt_gap = self._text(height=6)
 
-        self.status_label = tk.Label(header, text="⚠️ Kein aktives Word-Dokument erkannt.", fg="yellow", bg="#2e2e2e")
-        self.status_label.pack(side="left", padx=10)
+        # 2) Untersuchungen
+        toolbar = tk.Frame(self.root, bg="#222")
+        toolbar.pack(fill="x", padx=8, pady=(0, 4))
+        tk.Button(toolbar, text="2) Befunde (Lückentext, Basis)", command=self.on_befunde_gaptext).pack(side="left", padx=4)
+        tk.Button(toolbar, text="➕ Mehr (bei Persistenz)", command=lambda: self.on_befunde_gaptext(phase="persistent")).pack(side="left", padx=4)
 
-        # Schritt 1 – Anamnese bestätigen -> nur Rückfragen generieren
-        step1 = tk.LabelFrame(root, text="Schritt 1 – Anamnese bestätigen ➜ nur Rückfragen generieren",
-                              fg="white", bg="#2e2e2e")
-        step1.pack(fill="x", padx=8, pady=6)
+        self._label("Befunde (werden überschrieben)")
+        self.fields["Befunde"] = self._text(height=6)
 
-        self.btn_anamnese = tk.Button(step1, text="✓ Anamnese bestätigen", command=self.on_confirm_anamnese)
-        self.btn_anamnese.pack(side="left", padx=8, pady=6)
+        # 3) Beurteilung + Prozedere
+        self._button("3) Beurteilung + Prozedere finalisieren", self.on_finalize)
 
-        # Schritt 1b – Rückfragen beantwortet -> dann Befunde-Vorschläge generieren
-        step1b = tk.LabelFrame(root, text="Schritt 1b – Rückfragen beantwortet ➜ Befunde (Vorschläge) generieren",
-                               fg="white", bg="#2e2e2e")
-        step1b.pack(fill="x", padx=8, pady=6)
+        cols = tk.Frame(self.root, bg="#222")
+        cols.pack(fill="both", expand=True, padx=8)
+        left = tk.Frame(cols, bg="#222"); left.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        right = tk.Frame(cols, bg="#222"); right.pack(side="left", fill="both", expand=True, padx=(4, 0))
 
-        self.btn_followups_done = tk.Button(step1b, text="✓ Rückfragen beantwortet bestätigen", command=self.on_confirm_followups_done)
-        self.btn_followups_done.pack(side="left", padx=8, pady=6)
+        tk.Label(left, text="Beurteilung", fg="white", bg="#222", anchor="w").pack(fill="x")
+        self.fields["Beurteilung"] = self._text(parent=left, height=8)
 
-        # Felder (Ausgaben/Notizen)
-        self.fields = {}
-        for label, height in [
-            ("Rückfragen", 6),
-            ("Befunde (Vorschläge)", 6),
-            ("Differentialdiagnosen", 8),
-            ("Beurteilung", 6),
-            ("Prozedere", 8),
-        ]:
-            tk.Label(root, text=label, anchor="w", font=("Arial", 10, "bold"), bg="#2e2e2e", fg="white").pack(fill="x")
-            text_widget = scrolledtext.ScrolledText(root, height=height, wrap=tk.WORD, bg="#1e1e1e", fg="white",
-                                                    insertbackground="white")
-            text_widget.pack(fill="both", padx=8, pady=4)
-            self.fields[label] = text_widget
+        tk.Label(right, text="Prozedere", fg="white", bg="#222", anchor="w").pack(fill="x")
+        self.fields["Prozedere"] = self._text(parent=right, height=8)
 
-        # Schritt 2 – Befunde bestätigen
-        step2 = tk.LabelFrame(root, text="Schritt 2 – Befunde bestätigen ➜ 3+ Differentialdiagnosen erzeugen",
-                              fg="white", bg="#2e2e2e")
-        step2.pack(fill="x", padx=8, pady=6)
-        self.btn_befunde = tk.Button(step2, text="✓ Befunde bestätigen", command=self.on_confirm_befunde)
-        self.btn_befunde.pack(side="left", padx=8, pady=6)
+        # Warnfeld (Red Flags)
+        self._label("⚠️ Red Flags (Info, nicht in den Feldern)")
+        self.txt_redflags = self._text(height=4)
+        self.txt_redflags.configure(state="disabled")
 
-        # Schritt 3 – Verdachtsdiagnose bestätigen
-        step3 = tk.LabelFrame(root, text="Schritt 3 – Verdachtsdiagnose bestätigen ➜ Beurteilung & Prozedere",
-                              fg="white", bg="#2e2e2e")
-        step3.pack(fill="x", padx=8, pady=6)
+        # Gesamtausgabe & Utilities
+        util = tk.Frame(self.root, bg="#222")
+        util.pack(fill="x", padx=8, pady=(6, 0))
+        tk.Button(util, text="Alles generieren (4 Felder)", command=self.on_generate_full_direct).pack(side="left", padx=4)
+        tk.Button(util, text="Gesamtausgabe kopieren", command=self.copy_output).pack(side="left", padx=4)
+        tk.Button(util, text="Reset", command=self.reset_all).pack(side="left", padx=4)
 
-        tk.Label(step3, text="Verdachtsdiagnose:", bg="#2e2e2e", fg="white").pack(side="left", padx=(8, 4))
-        self.entry_dd = tk.Entry(step3, width=50)
-        self.entry_dd.pack(side="left", padx=4, pady=6, ipady=2)
+        self._label("Gesamtausgabe (kopierfertig)")
+        self.output_full = self._text(height=10)
 
-        self.btn_diag = tk.Button(step3, text="✓ Diagnose bestätigen", command=self.on_confirm_diagnose)
-        self.btn_diag.pack(side="left", padx=8)
+    # ---------- UI helpers ----------
+    def _label(self, text: str):
+        tk.Label(self.root, text=text, fg="white", bg="#222", anchor="w", font=("Arial", 10, "bold")).pack(fill="x", padx=8, pady=(8, 0))
 
-        # Red-Flags laden (wird in gpt_logic.generate_procedure verwendet)
-        self.red_flags_data = load_red_flags("red_flags.json")
+    def _text(self, height=6, parent=None):
+        parent = parent or self.root
+        t = scrolledtext.ScrolledText(parent, height=height, wrap=tk.WORD, bg="#111", fg="white", insertbackground="white")
+        t.pack(fill="both", expand=False, padx=8, pady=(4, 0))
+        return t
 
-        # Startzustand: Felder leeren
-        self.clear_outputs()
+    def _button(self, label, cmd):
+        tk.Button(self.root, text=label, command=cmd).pack(padx=8, pady=(6, 0), anchor="w")
 
-    # -------------------- Hintergrund-Loop --------------------
-
-    def toggle(self):
-        self.active = not self.active
-        self.toggle_button.config(
-            text="🟢 Live-Abgleich EIN" if self.active else "🔴 Live-Abgleich AUS",
-            bg="lightgreen" if self.active else "white"
-        )
-        if self.active:
-            threading.Thread(target=self.update_loop, daemon=True).start()
-
-    def update_loop(self):
-        last_seen = ""
-        while self.active:
-            path = get_active_word_path_via_applescript()
-            if path:
-                text = get_word_text(path)
-                if text and text != last_seen:
-                    last_seen = text
-                    self.status_label.config(text=f"📄 Word aktiv: {path.split('/')[-1]}", fg="lightgreen")
-                    self._update_cache_from_text(text)
-            else:
-                self.status_label.config(text="⚠️ Kein aktives Word-Dokument erkannt.", fg="yellow")
-            time.sleep(4)
-
-    def refresh_from_word(self):
-        path = get_active_word_path_via_applescript()
-        if not path:
-            messagebox.showwarning("Hinweis", "Kein aktives Word-Dokument erkannt.")
+    # ---------- Actions ----------
+    def on_gaptext(self):
+        raw = self.fields["Anamnese"].get("1.0", tk.END).strip()
+        if not raw:
+            messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese (frei) eingeben.")
             return
-        text = get_word_text(path)
-        if not text.strip():
-            messagebox.showwarning("Hinweis", "Konnte keinen Text aus Word lesen.")
+        try:
+            payload, gap = generate_anamnese_gaptext_german(raw)
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Lückentext fehlgeschlagen:\n{e}")
             return
-        self._update_cache_from_text(text)
-        self.status_label.config(text=f"📄 Word aktualisiert: {path.split('/')[-1]}", fg="lightgreen")
+        self.txt_gap.delete("1.0", tk.END)
+        self.txt_gap.insert(tk.END, gap)
 
-    def _update_cache_from_text(self, text: str):
-        self.current_anamnese = extract_section(text, "Anamnese")
-        self.current_befunde = extract_section(text, "Befunde")
-        # keine automatische Generierung – nur Cache aktualisieren
+    def on_befunde_gaptext(self, phase="initial"):
+        gap = self.txt_gap.get("1.0", tk.END).strip() if hasattr(self, "txt_gap") else ""
+        anamnese_for_exams = gap or (self.fields.get("Anamnese").get("1.0", tk.END).strip() if "Anamnese" in self.fields else "")
+        if not anamnese_for_exams:
+            from tkinter import messagebox
+            messagebox.showwarning("Hinweis", "Keine Anamnese vorhanden.")
+            return
+        try:
+            payload, bef_text = generate_befunde_gaptext_german(anamnese_for_exams, phase=phase)
+        except Exception as e:
+            from tkinter import messagebox
+            messagebox.showerror("Fehler", f"Befunde-Lückentext fehlgeschlagen:\n{e}")
+            return
 
-    # -------------------- Schritt-Callbacks --------------------
+        if phase == "initial":
+            self.fields["Befunde"].delete("1.0", tk.END)
+            self.fields["Befunde"].insert(tk.END, bef_text or "")
+        else:
+            current = self.fields["Befunde"].get("1.0", tk.END).strip()
+            if current:
+                self.fields["Befunde"].insert(tk.END, "\n\n")
+            self.fields["Befunde"].insert(tk.END, bef_text or "")
 
-    def on_confirm_anamnese(self):
-        """Nur Rückfragen generieren – keine Befunde-Vorschläge an diesem Punkt."""
-        anamnese = self.current_anamnese.strip()
-        if not anamnese:
-            # einmal probieren, Word frisch einzulesen
-            self.refresh_from_word()
-            anamnese = self.current_anamnese.strip()
-        if not anamnese:
-            messagebox.showwarning("Anamnese fehlt", "Im Word-Dokument wurde kein Inhalt unter 'Anamnese' gefunden.")
+
+
+    def on_basic_exams(self, phase="initial"):
+        gap = self.txt_gap.get("1.0", tk.END).strip()
+        anamnese_for_exams = gap or self.fields["Anamnese"].get("1.0", tk.END).strip()
+        if not anamnese_for_exams:
+            messagebox.showwarning("Hinweis", "Keine Anamnese vorhanden.")
+            return
+        try:
+            bef = suggest_basic_exams_german(anamnese_for_exams, phase=phase)
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Untersuchungen fehlgeschlagen:\n{e}")
+            return
+        self.fields["Befunde"].delete("1.0", tk.END)
+        self.fields["Befunde"].insert(tk.END, bef)
+
+    def on_finalize(self):
+        anamnese_final = self.txt_gap.get("1.0", tk.END).strip() or self.fields["Anamnese"].get("1.0", tk.END).strip()
+        befunde_final = self.fields["Befunde"].get("1.0", tk.END).strip()
+        if not anamnese_final:
+            messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese/Lückentext erstellen.")
+            return
+        try:
+            beurteilung, prozedere = generate_assessment_and_plan_german(anamnese_final, befunde_final)
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Finalisierung fehlgeschlagen:\n{e}")
+            return
+
+        self.fields["Beurteilung"].delete("1.0", tk.END)
+        self.fields["Beurteilung"].insert(tk.END, beurteilung or "")
+
+        self.fields["Prozedere"].delete("1.0", tk.END)
+        self.fields["Prozedere"].insert(tk.END, prozedere or "")
+
+        # Red Flags separat nachführen
+        self.update_red_flags(anamnese_final, befunde_final)
+
+        # Gesamtausgabe setzen
+        self.build_output(anamnese_final, befunde_final, beurteilung, prozedere)
+
+    def on_generate_full_direct(self):
+        """Ein Klick: 4 Felder voll generieren + Red Flags + Gesamtausgabe."""
+        # Kombiniere vorhandenen Inhalt als Kontext
+        parts = []
+        anamnese_raw = self.fields["Anamnese"].get("1.0", tk.END).strip()
+        gap = self.txt_gap.get("1.0", tk.END).strip()
+        anamnese_src = gap or anamnese_raw
+        if anamnese_src:
+            parts.append("Anamnese: " + anamnese_src)
+
+        bef = self.fields["Befunde"].get("1.0", tk.END).strip()
+        beu = self.fields["Beurteilung"].get("1.0", tk.END).strip()
+        proz = self.fields["Prozedere"].get("1.0", tk.END).strip()
+        if bef: parts.append("Befunde: " + bef)
+        if beu: parts.append("Beurteilung: " + beu)
+        if proz: parts.append("Prozedere: " + proz)
+
+        combined = "\n".join(parts).strip() or (anamnese_src or "")
+        if not combined:
+            messagebox.showwarning("Hinweis", "Bitte Anamnese im Tool eingeben.")
             return
 
         try:
-            # Nur Rückfragen erzeugen
-            self.fields["Rückfragen"].delete("1.0", tk.END)
-            self.fields["Rückfragen"].insert(tk.END, generate_follow_up_questions(anamnese))
-
-            # nach Schritt 1 alte Inhalte zurücksetzen
-            self.fields["Befunde (Vorschläge)"].delete("1.0", tk.END)
-            self.fields["Differentialdiagnosen"].delete("1.0", tk.END)
-            self.fields["Beurteilung"].delete("1.0", tk.END)
-            self.fields["Prozedere"].delete("1.0", tk.END)
+            payload, full_block = generate_full_entries_german(combined, context={})
         except Exception as e:
-            messagebox.showerror("Fehler", f"Fehler bei Schritt 1: {e}")
-
-    def on_confirm_followups_done(self):
-        """User hat Rückfragen beantwortet -> jetzt Befunde-Vorschläge generieren (basierend auf aktualisierter Anamnese)."""
-        # Anamnese erneut aus Word holen (Antworten auf Rückfragen idealerweise dort ergänzt)
-        self.refresh_from_word()
-        anamnese = self.current_anamnese.strip()
-        if not anamnese:
-            messagebox.showwarning("Anamnese fehlt", "Bitte zuerst 'Anamnese bestätigen' und die Rückfragen in Word beantworten.")
+            messagebox.showerror("Fehler", f"Generierung fehlgeschlagen:\n{e}")
             return
 
-        try:
-            self.fields["Befunde (Vorschläge)"].delete("1.0", tk.END)
-            self.fields["Befunde (Vorschläge)"].insert(tk.END, generate_relevant_findings(anamnese))
-        except Exception as e:
-            messagebox.showerror("Fehler", f"Fehler bei Schritt 1b: {e}")
+        # Felder überschreiben
+        self.fields["Anamnese"].delete("1.0", tk.END)
+        self.fields["Anamnese"].insert(tk.END, payload.get("anamnese_text", ""))
 
-    def on_confirm_befunde(self):
-        # Befunde erneut aus Word holen (User hat echte Befunde in Word ergänzt)
-        self.refresh_from_word()
-        anamnese = self.current_anamnese.strip()
-        befunde = self.current_befunde.strip()
+        self.fields["Befunde"].delete("1.0", tk.END)
+        self.fields["Befunde"].insert(tk.END, payload.get("befunde_text", ""))
 
-        if not anamnese:
-            messagebox.showwarning("Anamnese fehlt", "Bitte erst Schritt 1 durchführen.")
-            return
-        if not befunde:
-            # Fallback: falls noch nichts in Word steht, mit Vorschlägen weiterarbeiten
-            befunde = self.fields["Befunde (Vorschläge)"].get("1.0", tk.END).strip()
-        if not befunde:
-            messagebox.showwarning("Befunde fehlen", "Keine Befunde gefunden. Bitte in Word ergänzen oder Vorschläge nutzen.")
-            return
+        self.fields["Beurteilung"].delete("1.0", tk.END)
+        self.fields["Beurteilung"].insert(tk.END, payload.get("beurteilung_text", ""))
 
-        try:
-            dd_text = generate_differential_diagnoses(anamnese, befunde)
-            self.fields["Differentialdiagnosen"].delete("1.0", tk.END)
-            self.fields["Differentialdiagnosen"].insert(tk.END, dd_text)
-        except Exception as e:
-            messagebox.showerror("Fehler", f"Fehler bei Schritt 2: {e}")
+        self.fields["Prozedere"].delete("1.0", tk.END)
+        self.fields["Prozedere"].insert(tk.END, payload.get("prozedere_text", ""))
 
-    def on_confirm_diagnose(self):
-        selected = self.entry_dd.get().strip()
-        if not selected:
-            messagebox.showwarning("Verdachtsdiagnose fehlt", "Bitte eine Verdachtsdiagnose eingeben.")
-            return
+        # Red Flags anzeigen (separat)
+        rf = payload.get("red_flags", []) or []
+        self.set_red_flags(rf)
 
-        # noch einmal sicher Anamnese/Befunde einlesen
-        self.refresh_from_word()
-        anamnese = self.current_anamnese.strip()
-        befunde = self.current_befunde.strip()
-        if not befunde:
-            befunde = self.fields["Befunde (Vorschläge)"].get("1.0", tk.END).strip()
+        # Gesamtausgabe
+        self.output_full.delete("1.0", tk.END)
+        self.output_full.insert(tk.END, full_block)
 
-        try:
-            beurteilung_text = generate_assessment_from_differential(selected, anamnese, befunde)
-            self.fields["Beurteilung"].delete("1.0", tk.END)
-            self.fields["Beurteilung"].insert(tk.END, beurteilung_text)
+    def update_red_flags(self, anamnese_text: str, befunde_text: str):
+        """Lokal Red Flags prüfen (falls Modul vorhanden)."""
+        rf_list = []
+        if load_red_flags and check_red_flags:
+            try:
+                here = os.path.dirname(os.path.abspath(__file__))
+                path = os.path.join(here, "red_flags.json")
+                data = load_red_flags(path)
+                rf_hits = check_red_flags(anamnese_text + "\n" + befunde_text, data, return_keywords=True) or []
+                rf_list = [f"{kw} – {msg}" for (kw, msg) in rf_hits]
+            except Exception:
+                rf_list = []
+        self.set_red_flags(rf_list)
 
-            prozedere_text = generate_procedure(beurteilung_text, befunde, anamnese)
-            self.fields["Prozedere"].delete("1.0", tk.END)
-            self.fields["Prozedere"].insert(tk.END, prozedere_text)
-        except Exception as e:
-            messagebox.showerror("Fehler", f"Fehler bei Schritt 3: {e}")
+    def set_red_flags(self, items):
+        self.txt_redflags.configure(state="normal")
+        self.txt_redflags.delete("1.0", tk.END)
+        if items:
+            self.txt_redflags.insert(tk.END, "\n".join(f"- {x}" for x in items))
+        self.txt_redflags.configure(state="disabled")
 
-    # -------------------- Utils --------------------
+    def build_output(self, anamnese: str, befunde: str, beurteilung: str, prozedere: str):
+        parts = []
+        parts.append("Anamnese:")
+        parts.append(anamnese or "keine Angaben")
+        parts.append("")
+        parts.append("Befunde:")
+        parts.append(befunde or "keine Angaben")
+        parts.append("")
+        parts.append("Beurteilung:")
+        parts.append(beurteilung or "keine Angaben")
+        parts.append("")
+        parts.append("Prozedere:")
+        parts.append(prozedere or "keine Angaben")
 
-    def clear_outputs(self):
-        for w in self.fields.values():
-            w.delete("1.0", tk.END)
+        self.output_full.delete("1.0", tk.END)
+        self.output_full.insert(tk.END, "\n".join(parts).strip())
 
-if __name__ == "__main__":
+    def copy_output(self):
+        text = self.output_full.get("1.0", tk.END)
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update()  # nötig auf macOS
+        messagebox.showinfo("Kopiert", "Gesamtausgabe in Zwischenablage.")
+
+    def reset_all(self):
+        for k in ("Anamnese", "Befunde", "Beurteilung", "Prozedere"):
+            self.fields[k].delete("1.0", tk.END)
+        self.txt_gap.delete("1.0", tk.END)
+        self.output_full.delete("1.0", tk.END)
+        self.set_red_flags([])
+
+
+def main():
     root = tk.Tk()
     app = ConsultationAssistant(root)
     root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
