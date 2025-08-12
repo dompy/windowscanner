@@ -118,7 +118,7 @@ class ConsultationAssistant:
         if self.beurteilung_generated:
             self.last_beurteilung_input = current_input
             self.root.after(2000, lambda: self.monitor_beurteilung_field(anamnese, befunde))
-            return
+            return  
 
         print("🧠 Beurteilung erkannt – generiere ärztliche Einschätzung …")
         self.beurteilung_generated = True
