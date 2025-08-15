@@ -76,7 +76,7 @@ def _swiss_style_note(humanize: bool = True) -> str:
         "Natürlich klingend wie hausärztliche KG-Einträge, kurz/telegraphisch; "
     )
     if humanize:
-        base += "gelegentlich minimale Tippfehler/Verkürzungen ok; "
+        base += "gelegentlich minimale Tippfehler/Verkürzungen einbauen; "
     base += "keine Floskeln, keine Romane."
     return base
 
