@@ -1,4 +1,11 @@
 # gpt_logic.py  — CLEAN & SWISS-STYLE
+ 
+# gestern abend schüttelfrost, dann gliederschmerzen, fieber 39°, verwirrt gewesen, auf dafalgan fieber regredient.
+# seit 3 tagen husten mit gelb-grünem auswurf, atemnot beim treppensteigen, letzte nacht leicht fieber, kein brustschmerz.
+# seit heute morgen starke schmerzen im rechten unterbauch, übelkeit, kein erbrechen, kein durchfall, kein fieber gemessen.
+# vor einer woche umgeknickt, seitdem schwellung und schmerz am rechten sprunggelenk, belastung kaum möglich, keine offene wunde.
+# seit 2 wochen müde, blass, appetitlos, in letzter zeit häufig schwindel beim aufstehen, keine magen-darm-beschwerden.
+# seit gestern juckender ausschlag an beiden armen, nach gartenarbeit aufgetreten, keine atemnot, kein fieber.
 
 import os
 import json
@@ -114,16 +121,16 @@ def generate_full_entries_german(
 
     # System-Prompt (kein f-string, damit wir sicher vor Backslash-Problemen sind)
     sys_msg = (
-        "Du bist ein medizinischer Assistent in einer Schweizer Hausarztpraxis.\n"
+        "Du bist ein erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
         "Ziel: Erzeuge vier dokumentationsfertige Felder (Deutsch), direkt kopierbar.\n"
         "WICHTIG:\n"
         "- Nichts erfinden. Wo Angaben fehlen: \"keine Angaben\", \"nicht erhoben\" oder \"noch ausstehend\".\n"
         "- Stil:\n"
-        "  • Anamnese: kurz/telegraphisch; Dauer, Lokalisation/Qualität, Begleitsymptome, relevante Vorerkrankungen/Medikation, Kontext.\n"
-        "  • Befunde: objektiv; Kurzstatus (AZ, Orientierung, Inspektion/Palpation/Perkussion/Auskultation je nach Fall), Vitalparameter; unklare Punkte als \"nicht erhoben\".\n"
-        "  • Beurteilung: Arbeitsdiagnose + 2–4 DD (kurz, plausibel).\n"
-        "  • Prozedere: kurze, klare Zeilen; nächste Schritte, Verlauf/Kontrolle, Warnzeichen; Medikation nur allgemein, keine erfundenen Dosierungen.\n"
-        "- Schweizer Orthografie (ss statt ß). Natürlich/knapp.\n"
+        "  • Anamnese: kurz/telegraphisch; Dauer, Lokalisation/Qualität, relevante zu erfragende Begleitsymptome auflisten, relevante zu erfragende Vorerkrankungen/Medikation auflisten, Kontext.\n"
+        "  • Befunde: objektiv; Kurzstatus (AZ).\n"
+        "  • Beurteilung: Verdachtsdiagnose + 2–4 DD (kurz, plausibel).\n"
+        "  • Prozedere: kurze, klare Bulletpoints; nächste Schritte, Verlauf/Kontrolle, Vorzeitige Wiedervorstellung; Medikation nur allgemein, keine erfundenen Dosierungen.\n"
+        "- Schweizer Orthografie (ss statt ß), kein z.B., Natürlich/knapp.\n"
         "- Antworte ausschließlich als JSON:\n\n"
         "{\n"
         "  \"anamnese_text\": \"string\",\n"
@@ -158,26 +165,22 @@ def generate_anamnese_gaptext_german(
     humanize: bool = True
 ) -> Tuple[Dict[str, Any], str]:
     """
-    Erzeugt eine zusammenhängende Anamnese mit eingebetteten Lücken/Optionen,
-    die den vorhandenen Freitext integriert (keine Wiederholungen).
-    Return: (payload, gap_text_str)
-    payload: { "anamnese_lueckentext": str, "offene_punkte_checkliste": [..] }
+    Erzeugt 2–3 gezielte Zusatzfragen basierend auf dem Patiententext.
+    Return: (payload, fragen_text)
+    payload: { "zusatzfragen": [..] }
     """
 
     def _sys_msg_base(note: str) -> str:
         return (
-            "Du bist medizinischer Assistent in einer Schweizer Hausarztpraxis.\n"
+            "Du bist ein erfahrener Hausarzt in der Schweiz.\n"
             + note + "\n"
-            "Aufgabe: Erzeuge einen **zusammenhängenden Anamnesetext**, der den vorhandenen Freitext integriert\n"
-            "und **nur** noch fehlende Punkte als Platzhalter [__] oder sehr kurze Optionen (z. B. ja/nein) direkt im Text markiert.\n"
-            "KEINE Listen mit Fragen, KEINE Bulletpoints, KEINE losen Fragenzeilen.\n"
-            "Bereits beantwortete Inhalte **nicht** erneut abfragen oder umformulieren.\n"
-            "Form: 2–6 kurze, telegraphische Zeilen/Sätze, natürlich und praxisnah, Schweizer Orthografie (ss statt ß).\n"
-            "Wenn wirklich nichts fehlt, gib eine leicht geglättete Version des Eingangstextes zurück (ohne Platzhalter).\n\n"
-            "Gib ausschließlich JSON im Schema:\n"
+            "Aufgabe: Analysiere den Freitext des Patienten und formuliere **2–5 gezielte, medizinisch relevante Zusatzfragen**, "
+            "um die wahrscheinlichste Diagnose schnell einzugrenzen.\n"
+            "Keine Untersuchungen nennen – nur Fragen.\n"
+            "Fragen müssen kurz, klar und patientenverständlich formuliert sein.\n"
+            "Antwort ausschließlich als JSON im Format:\n"
             "{\n"
-            "  \"anamnese_lueckentext\": \"string\",\n"
-            "  \"offene_punkte_checkliste\": [\"string\", \"...\"]\n"
+            "  \"zusatzfragen\": [\"Frage 1\", \"Frage 2\", \"Frage 3\", \"Frage 4\", \"Frage 5\"]\n"
             "}\n"
         ).strip()
 
@@ -187,13 +190,9 @@ def generate_anamnese_gaptext_german(
     usr = {
         "eingabe_freitext": anamnese_raw,
         "bereits_beantwortet": answered_context or "",
-        "hinweise": (
-            "Vermeide Dopplungen. Nur essenziell fehlende Angaben markieren. "
-            "Kein Voranstellen von 'Fragen:' oder '-' – alles in einem flüssigen Text."
-        )
+        "hinweise": "Keine Lückentexte, keine Listen mit Untersuchungen. Fokus nur auf Zusatzfragen."
     }
 
-    # 1. Versuch
     result = _ask_openai_json(
         messages=[
             {"role": "system", "content": sys_msg},
@@ -201,49 +200,14 @@ def generate_anamnese_gaptext_german(
         ]
     )
 
-    def _is_bad(g: str) -> bool:
-        txt = (g or "").strip()
-        if not txt:
-            return True
-        # erkennbar als Fragenliste/Bad-Pattern:
-        if txt.startswith("- ") or "\n- " in txt:
-            return True
-        # zu viele Fragezeichen deuten auf reine Fragenliste
-        if txt.count("?") >= 3 and "[" not in txt:
-            return True
-        return False
-
-    gap_text = ""
+    fragen_text = ""
     if isinstance(result, dict):
-        gap_text = (result.get("anamnese_lueckentext") or "").strip()
+        fragen_liste = result.get("zusatzfragen", [])
+        if fragen_liste:
+            fragen_text = "\n".join([f"- {f}" for f in fragen_liste])
 
-    # 2. Versuch mit strengerem Prompt, falls das Modell trotzdem Fragenliste ausgibt/leer bleibt
-    if _is_bad(gap_text):
-        strict_sys = (
-            _sys_msg_base(note)
-            + "\n\nWICHTIG (STRICT MODE):\n"
-            "- KEINE Aufzählungen/Bullets/Listen.\n"
-            "- KEINE Zeilen, die mit '-' beginnen.\n"
-            "- MAX. 5 Platzhalter [__], ansonsten Text glätten.\n"
-            "- Fragezeichen sparsam; Optionen in Klammern (ja/nein) oder kurze Auswahl.\n"
-        )
-        result2 = _ask_openai_json(
-            messages=[
-                {"role": "system", "content": strict_sys},
-                {"role": "user", "content": json.dumps(usr, ensure_ascii=False)},
-            ]
-        )
-        if isinstance(result2, dict):
-            gap_text2 = (result2.get("anamnese_lueckentext") or "").strip()
-            if not _is_bad(gap_text2):
-                result = result2
-                gap_text = gap_text2
+    return result, fragen_text or anamnese_raw
 
-    # Fallback: Eingabetext zurückgeben, falls immer noch schlecht/leer
-    if not gap_text:
-        gap_text = anamnese_raw
-
-    return result, gap_text
 
 def generate_befunde_gaptext_german(
     anamnese_filled: str,
@@ -258,22 +222,13 @@ def generate_befunde_gaptext_german(
     note = _swiss_style_note(humanize)
 
     sys_msg = (
-        "Du bist medizinischer Assistent in einer Schweizer Hausarztpraxis.\n"
+        "Du bist ein erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
         + note + "\n"
-        "Aufgabe: Erzeuge eine Liste praxisrelevanter, in der Hausarztpraxis direkt erheblicher Befunde, "
-        "die zur Anamnese passen.\n"
+        "Aufgabe: Erzeuge eine Liste praxisrelevanter körperlicher Untersuchungen, die in der Hausarztpraxis zu erheben sind und "
+        "zur Anamnese passen. Keine Vitalparameter!\n"
         "WICHTIG:\n"
         "- KEIN fertiger Statusbericht / kein Fliesstext.\n"
         "- Nur ausfüllbare Punkte mit Platzhaltern/Optionen, z. B.:\n"
-        "  - AZ: (gut/mittel/reduziert)\n"
-        "  - Orientierung (zeitlich/situativ): (vollständig/teilweise/eingeschränkt)\n"
-        "  - RR [__] mmHg, HF [__]/min, SpO2 [__]%, Temp [__] °C\n"
-        "  - Inspektion: [__]\n"
-        "  - Palpation/Druckdolenz: (keine/leicht/stark) Lokalisation [__]\n"
-        "  - Bewegung (frei/eingeschränkt) [__]\n"
-        "  - Auskultation: [__]\n"
-        "  - POCT/Labor: CRP [__], BZ [__], Urinstix [__]\n"
-        "  - EKG: (unauffällig/auffällig) Befund [__]\n"
         "- Keine konkreten Messwerte eintragen, nur Struktur zum Ausfüllen.\n"
         "- Nichts doppeln, was in der Anamnese bereits beantwortet ist.\n"
         "- phase=\"initial\": nur Basics; phase=\"persistent\": am Ende eine Zusatzzeile mit 2–3 sinnvollen Erweiterungen.\n"
@@ -303,18 +258,11 @@ def generate_befunde_gaptext_german(
     # Fallback, falls das Modell nichts liefert: generische, ausfüllbare Skeleton-Liste
     if not bef_text:
         lines = [
-            "- AZ: (gut/mittel/reduziert)",
-            "- Orientierung (zeitlich/situativ): (vollständig/teilweise/eingeschränkt)",
-            "- RR [__] mmHg, HF [__]/min, SpO2 [__]%, Temp [__] °C",
-            "- Inspektion: [__]",
-            "- Palpation/Druckdolenz: (keine/leicht/stark) Lokalisation [__]",
-            "- Bewegung (frei/eingeschränkt) [__]",
-            "- Auskultation: [__]",
-            "- POCT/Labor: CRP [__], BZ [__], Urinstix [__]",
-            "- EKG: (unauffällig/auffällig) Befund [__]",
+            "- AZ: gut mittel reduziert",
+            "- keine weiteren Befunde",
         ]
         if phase == "persistent":
-            lines.append('Bei Persistenz/Progredienz: (Röntgen/US/erweitertes Labor) [__]')
+            lines.append('Bei Persistenz/Progredienz: (Röntgen/US/erweitertes Labor) __')
         bef_text = "\n".join(lines)
 
     return result, bef_text
@@ -350,7 +298,7 @@ def suggest_basic_exams_german(
     note = _swiss_style_note(humanize)
 
     sys_msg = (
-        "Du bist medizinischer Assistent in einer Schweizer Hausarztpraxis.\n"
+        "Du bist erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
         + note + "\n"
         "Nur Untersuchungen, die in der Grundversorgung rasch verfügbar sind. "
         "Kein Overkill; dedupliziere gegen bereits erhobene Angaben.\n"
@@ -361,10 +309,10 @@ def suggest_basic_exams_german(
     prompt = (
         sys_msg
         + "\n\nVorgaben:\n"
-        "- Zuerst Kurzstatus: AZ, Orientierung, Vitalparameter (RR, HF, SpO2, Temp).\n"
-        "- Dann gezielt (je nach Leitsymptom): Inspektion/Palpation/Perkussion/Auskultation.\n"
-        "- Basisgeraete/POCT: EKG, Lungenfunktion, Labor (3–6 relevante Parameter), Schellong, BD-Messung.\n"
-        "- Bei phase=\"persistent\": am Ende eine Zeile \"Bei Persistenz/Progredienz:\" mit 2–3 sinnvollen Erweiterungen.\n"
+        "- Zuerst Kurzstatus: AZ .\n"
+        "- Dann fokussierte körperliche Untersuchung gemäss Leitsymptom\n"
+        "- Optionale Basisgeraete/POCT: EKG, Lungenfunktion, Labor (3–6 relevante Parameter), Schellong.\n"
+        "- Bei phase=\"persistent\": am Ende eine Zeile \"Bei Persistenz/Progredienz:\" mit 2–3 sinnvollen erweiterten Untersuchungen.\n"
         "- Keine Dopplungen zu bereits erwähnten/erhobenen Punkten.\n"
         "- Schweizer Standards.\n\n"
         "Antwort: Gib nur das Feld \"Befunde\" als zusammenhängenden, praxisnahen Text (keine JSON).\n"
@@ -395,7 +343,7 @@ def generate_assessment_and_plan_german(
     note = _swiss_style_note(humanize)
 
     sys_part = (
-        "Du bist medizinischer Assistent in einer Schweizer Hausarztpraxis.\n"
+        "Du bist ein erfahrener Husarzt in einer Schweizer Hausarztpraxis.\n"
         + note + "\n"
         "Nur notwendige Infos; keine Wiederholungen von bereits Gesagtem. "
         "Schweizer/Europäische Guidelines priorisieren (danach UK/US). "
@@ -408,12 +356,12 @@ def generate_assessment_and_plan_german(
         sys_part
         + "\n\nErzeuge zwei fertige Felder:\n\n"
         "Beurteilung:\n"
-        "- Arbeitsdiagnose (kurz, plausibel aus Anamnese/Befunden)\n"
+        "- Verdachtsdiagnose (kurz, plausibel aus Anamnese/Befunden) mit kurzer Begründung.\n"
         "- 2–3 DD (nur wenn klinisch sinnvoll), ohne Wiederholung von Befunden\n"
         "- Falls Red Flags vorhanden: kurze Einordnung dort, sonst weglassen\n\n"
         "Prozedere:\n"
-        "- Konkrete nächste Schritte in der Praxis (kurze, klare Zeilen)\n"
-        "- Sicherheit: Warnzeichen/Frühkontrolle\n"
+        "- Unterpunkte, kein Fliesstext. Konkrete nächste Schritte in der Praxis (kurze, klare Bulletpoints)\n"
+        "- Vorzeitige Wiedervorstellung\n"
         "- Verlauf/Kontrolle (realistisches Intervall)\n"
         "- Medikamentöse Massnahmen nur allgemein (keine erfundenen Dosierungen)\n"
         "- Bei \"persistent\": kurze Zeile zu weiterführender Abklärung/Überweisung\n\n"
