@@ -3,6 +3,13 @@
 Praxis-Assistent – Tkinter GUI (robust gegen API-/Signatur-Drift)
 -----------------------------------------------------------------
 
+Fixes enthalten:
+- Robust gegen unterschiedliche Backendsignaturen von
+  generate_assessment_and_plan_german (Adapter mit inspect.signature)
+- Alle String-Literale korrekt (keine umgebrochenen f-Strings)
+- Methoden korrekt eingerückt (on_generate_full_direct war versehentlich Top-Level)
+- Kleine Self-Tests für Parser/Adapter
+
 Hinweis: In CI/Sandbox-Umgebungen ohne Tkinter bitte die CLI-Version verwenden.
 Self-Test (nur Parser/Helper, ohne GUI):
   python ui_assistant_stepflow.py --self-test
@@ -148,6 +155,170 @@ def parse_gap_qa(text: str) -> List[Tuple[str, str]]:
                 q += "?"
             pairs.append((q, a))
     return pairs
+
+
+# ---- Fokus-Erkennung & Befunde-Lückentext (lokal, ohne LLM) ----
+
+def _guess_focus(anamnese_text: str, qa_pairs: Optional[List[Tuple[str, str]]] = None) -> str:
+    """Leitsymptom grob erkennen (für objektiven Befunde-Lückentext)."""
+    text = (anamnese_text or "").lower()
+    if qa_pairs:
+        text += " " + " ".join((q + " " + a).lower() for q, a in qa_pairs)
+
+    # Muskuloskelettal
+    if any(k in text for k in ("handgelenk", "hand", "finger", "daumen", "wrist", "karpal", "karpaltunnel")):
+        return "msk_wrist"
+    if any(k in text for k in ("schulter", "ac-gelenk", "clavicula", "delta")):
+        return "msk_shoulder"
+    if any(k in text for k in ("knie", "menisk", "kreuzband", "patella")):
+        return "msk_knee"
+    if any(k in text for k in ("sprunggelenk", "fuss", "fuß", "umknick", "achill")):
+        return "msk_ankle"
+    if any(k in text for k in ("ellenbogen", "ellbogen", "epicondyl")):
+        return "msk_elbow"
+    if any(k in text for k in ("hüfte", "huefte", "leiste", "cox")):
+        return "msk_hip"
+
+    # Wirbelsäule / Rücken
+    if any(k in text for k in ("rücken", "ruecken", "lumb", "lws", "ischias")):
+        return "lws"
+
+    # Innere
+    if any(k in text for k in ("brust", "thorax", "atemnot", "brustschmerz")):
+        return "thorax"
+    if any(k in text for k in ("bauch", "abdomen", "übelkeit", "erbrechen")):
+        return "abdomen"
+    if any(k in text for k in ("hals", "husten", "halsweh", "halsschmerz")):
+        return "hno"
+    if any(k in text for k in ("kopfschmerz", "schwindel", "synkope")):
+        return "neuro"
+    return "allg"
+
+
+def _extract_cues(anamnese_text: str, qa_pairs: Optional[List[Tuple[str, str]]] = None) -> Dict[str, bool]:
+    """Einfaches Signal-Set aus Anamnese/Q&A ableiten, um die Untersuchung zu fokussieren."""
+    t = (anamnese_text or "").lower()
+    if qa_pairs:
+        t += " " + " ".join((q + " " + a).lower() for q, a in qa_pairs)
+
+    def has(words: List[str]) -> bool:
+        return any(w in t for w in words)
+
+    return {
+        "trauma": has(["sturz", "gestürzt", "gefallen", "trauma", "umknick", "verdreht", "prellung"]),
+        "overuse": has(["überlast", "ueberlast", "handwerk", "repetitiv", "tastatur", "werkzeug", "sport"]),
+        "swelling": has(["schwellung", "geschwollen"]),
+        "redness_heat": has(["rötung", "roetung", "heiss", "wärme", "warm"]),
+        "numbness": has(["taub", "kribbel", "einschlaf", "parästhes", "paraesthes"]),
+        "weakness": has(["schwäche", "kraftverlust"]),
+        "radial": has(["daumen", "radial", "speiche", "tabatiere", "snuffbox"]),
+        "ulnar": has(["ulnar", "elle", "kleinfinger"]),
+        "chronic": has(["wochen", "monaten"]),
+        "acute": has(["heute", "gestern", "seit gestern", "akut"]),
+    }
+
+
+def _build_exam_lueckentext(focus: str = "allg", phase: str = "initial", cues: Optional[Dict[str, bool]] = None) -> str:
+    """Erzeugt einen **Befunde**-Lückentext (objektive Untersuchung + ggf. POCT) nach Leitsymptom.
+    `cues` verfeinert die Auswahl (z. B. Trauma → Snuffbox-Test, Kribbeln → Phalen/Tinel).
+    """
+    cues = cues or {}
+    blocks: List[str] = []
+    # Kurzstatus immer zuerst (ohne führendes "- ", das fügen wir unten ein)
+    blocks.append("AZ: wach, orientiert, kooperativ; Haut/Schleimhäute: ____; Temp: ____")
+
+    if focus == "msk_wrist":
+        blocks += [
+            "Hand/Handgelenk: Inspektion ____ (Schwellung/Rötung/Fehlstellung/Atrophie)",
+            "Palpation: Tabatière/Os scaphoideum ____; distaler Radius/Ulna ____; DRUG ____; Sehnenscheiden ____",
+            "Beweglichkeit: Flex ____/Ext ____/Ulnardev ____/Radialdev ____; Pro-/Supination ____",
+            "Neurovaskulär: Sensibilität N. medianus/ulnaris/radialis ____; Motorik Daumenopposition/Abduktion ____; Kapillarfüllung/A. radialis/ulnaris ____ (Vergleich Gegenseite)",
+        ]
+        spec: List[str] = []
+        if cues.get("trauma"):
+            spec.append("Spezial: Snuffbox-Druckschmerz ____; axialer Daumenkompressionsschmerz ____; Stabilität DRUG ____")
+        if cues.get("overuse") or cues.get("radial"):
+            spec.append("Spezial: Finkelstein-Test (de Quervain) ____; EPL/ECU-Sehne ____")
+        if cues.get("numbness"):
+            spec.append("Spezial: Phalen-/Tinel-Zeichen (CTS) ____")
+        if cues.get("ulnar"):
+            spec.append("Spezial: TFCC-Belastungstest ____")
+        if spec:
+            blocks += spec
+        poct = "POCT: — (keine); Ultraschall falls verfügbar."
+        persist = "Bildgebung bei Persistenz/Progredienz (Rx Handgelenk inkl. Skaphoid-Serie oder US), ggf. Ortho/Handchirurgie."
+
+    elif focus == "lws":
+        blocks += [
+            "Wirbelsäule/LWS: Inspektion ____; Palpation ____ (paravertebral/Processi spinosi); Klopfschmerz ____",
+            "Beweglichkeit LWS: Flex/Ex/Lat/Rotation ____ (eingeschränkt/seitengleich)",
+            "Neurologie Beine: Kraft ____; Reflexe (PSR/ASR) ____; Sensibilität ____; Lasègue ____",
+            "Gangbild/Zehen-Fersenstand ____",
+        ]
+        poct = "POCT (bei Bedarf): CRP, Urin-Stix; ggf. BZ."
+        persist = "Bei Persistenz/Progredienz: Rx LWS oder MRI je nach Klinik; evtl. Überweisung Physio/Ortho/Neurologie."
+
+    elif focus == "thorax":
+        blocks += [
+            "Herz: Frequenz/Rhythmus ____; Auskultation ____",
+            "Lunge: AF ____; Auskultation ____ (vesikulär/Knisterrasseln/Giemen)",
+            "Thoraxwand: Druck-/Bewegungsschmerz ____",
+        ]
+        poct = "POCT (bei Bedarf): SpO2, EKG, CRP."
+        persist = "Bei Persistenz/Progredienz: Rx Thorax; EKG/Labor nach Klinik."
+
+    elif focus == "abdomen":
+        blocks += [
+            "Abdomen: Inspektion ____; Abwehrspannung ____; Druckdolenz ____; Klopfschmerz ____",
+            "Darmgeräusche ____; McBurney/Murphy ____",
+        ]
+        poct = "POCT (bei Bedarf): Urin-Stix, CRP, BZ."
+        persist = "Bei Persistenz/Progredienz: Labor/US Abdomen; evtl. Überweisung."
+
+    elif focus == "hno":
+        blocks += [
+            "Hals/Nase/Rachen: Rötung/Beläge ____; Lymphknoten ____",
+            "Ohren: Trommelfell ____; Nase: Sekretion ____",
+            "Lunge (Auskultation) ____",
+        ]
+        poct = "POCT (bei Bedarf): Strep-/Influenza-/COVID-Ag."
+        persist = "Bei Persistenz/Progredienz: Labor/Rx je nach Klinik; HNO-Überweisung erwägen."
+
+    elif focus == "neuro":
+        blocks += [
+            "Neuro-Status kurz: Vigilanz/Orientierung ____; Paresen ____; Sensibilität ____; Hirnnerven ____",
+            "Koordination/Gangbild ____",
+        ]
+        poct = "POCT (bei Bedarf): BZ; ggf. EKG."
+        persist = "Bei Persistenz/Progredienz: Neuro-Abklärung; Bildgebung nach Klinik."
+
+    else:  # allg
+        blocks += [
+            "Herz: RR/Puls ____; Auskultation ____",
+            "Lunge: AF ____; Auskultation ____",
+            "Abdomen: weich/nicht druckdolent ____",
+        ]
+        poct = "POCT (bei Bedarf): CRP, BZ, Urin-Stix."
+        persist = "Bei Persistenz/Progredienz: weiterführende Abklärung nach Klinik."
+
+    # Checkliste unten anhängen
+
+    checklist = [
+        "Untersuchung komplett, Seitenvergleich",
+        poct,
+    ]
+
+    # Stringaufbau in kleinen Schritten, damit Editoren nichts umbrechen
+    lines = ["- " + line if not line.startswith("-") else line for line in blocks]
+    lz = "\n".join(lines)
+
+    checklist_str = "\n- [ ] ".join(checklist)
+    lz += "\n- [ ] " + checklist_str
+
+    if phase == "persistent":
+        lz += "\nBei Persistenz/Progredienz: " + persist
+
+    return lz
 
 
 # =========================
@@ -315,24 +486,18 @@ class ConsultationAssistant:
         fld_edit.insert("1.0", final)
 
     def on_befunde_gaptext(self, phase: str = "initial"):
+        """Erzeugt **Befunde** als objektiven Lückentext (körperliche Untersuchung + ggf. POCT).
+        Subjektive Inhalte bleiben in der Anamnese.
+        """
         self._refresh_qa_from_gap()
         anamnese_for_exams = self.fields.get("Anamnese").get("1.0", tk.END).strip()
         if not anamnese_for_exams:
             messagebox.showwarning("Hinweis", "Keine Anamnese vorhanden.")
             return
-        try:
-            try:
-                payload, bef_text = generate_befunde_gaptext_german(
-                    anamnese_for_exams,
-                    phase=phase,
-                    zusatzfragen=self.last_zusatzfragen,
-                    zusatzfragen_qa=self.last_zusatzfragen_qa or None,
-                )
-            except TypeError:
-                payload, bef_text = generate_befunde_gaptext_german(anamnese_for_exams, phase=phase)
-        except Exception as e:
-            messagebox.showerror("Fehler", f"Befunde-Lückentext fehlgeschlagen:\n{e}")
-            return
+        # Leitsymptom schätzen und lokalen Lückentext bauen (ohne LLM)
+        focus = _guess_focus(anamnese_for_exams, self.last_zusatzfragen_qa)
+        cues = _extract_cues(anamnese_for_exams, self.last_zusatzfragen_qa)
+        bef_text = _build_exam_lueckentext(focus, phase, cues)
         self.fields["Befunde"].delete("1.0", tk.END)
         self.fields["Befunde"].insert(tk.END, bef_text or "")
 
