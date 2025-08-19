@@ -1,37 +1,34 @@
-import json
+import json, re
 from typing import Dict, List, Tuple, Union
 
-# Funktion zum Laden der Red-Flag-Regeln aus einer JSON-Datei
+_NEG_PAT = re.compile(r"\b(kein|keine|keinen|nicht|ohne)\s+", re.IGNORECASE)
+
 def load_red_flags(filepath: str) -> Dict[str, List[dict]]:
     with open(filepath, "r", encoding="utf-8") as f:
         return json.load(f)
 
-# Funktion zur Überprüfung der Anamnese anhand der geladenen Red-Flags
-def check_red_flags(anamnese: str, red_flags_data: Dict[str, List[dict]], return_keywords: bool = False) -> List[Union[str, Tuple[str, str]]]:
-    print(f"🧪 Red-Flag-Daten geladen mit {len(red_flags_data)} Kategorien")
+def _negated(full_text: str, keyword: str) -> bool:
+    # Negation innerhalb kurzer Distanz vor dem Keyword
+    pattern = re.compile(rf"{_NEG_PAT.pattern}{re.escape(keyword)}\b", re.IGNORECASE)
+    return bool(pattern.search(full_text))
 
-    flags = []
+def check_red_flags(anamnese: str, red_flags_data: Dict[str, List[dict]],
+                    return_keywords: bool = False) -> List[Union[str, Tuple[str, str]]]:
+    flags: List[Union[str, Tuple[str, str]]] = []
+    seen: set = set()
     full_text = anamnese.lower()
 
-    for category_rules in red_flags_data.values():  # Dictionary mit z. B. {"Kardiopulmonal": [ {rule1}, {rule2} ]}
+    for category_rules in red_flags_data.values():
         for rule in category_rules:
             for keyword in rule["keywords"]:
-                keyword_lower = keyword.lower()
-
-                # Prüfe auf typische Negationen in der Anamnese
-                negations = [
-                    f"kein {keyword_lower}",
-                    f"keine {keyword_lower}",
-                    f"nicht {keyword_lower}",
-                    f"ohne {keyword_lower}"
-                ]
-                if any(neg in full_text for neg in negations):
-                    continue  # Red Flag unterdrückt
-
-                if keyword_lower in full_text:
-                    if return_keywords:
-                        flags.append((keyword, rule["message"]))
-                    else:
-                        flags.append(rule["message"])
-                    break  # Nur eine Meldung pro Regel
+                kw_lower = keyword.lower()
+                if _negated(full_text, kw_lower):
+                    continue
+                if kw_lower in full_text:
+                    key = (kw_lower, rule["message"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    flags.append((keyword, rule["message"]) if return_keywords else rule["message"])
+                    break
     return flags

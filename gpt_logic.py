@@ -11,12 +11,13 @@ import os
 import json
 import tkinter as tk
 from tkinter import scrolledtext, messagebox
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Optional, List, Tuple
 from openai import OpenAI
 from red_flags_checker import check_red_flags, load_red_flags
+import logging
 
 # ------------------ Config & Client ------------------
-
+logging.basicConfig(level=logging.INFO)
 MODEL_DEFAULT = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 api_key = os.getenv("OPENAI_API_KEY")
@@ -39,16 +40,22 @@ PROMPT_PREFIX = (
 # ------------------ Low-level Helpers ------------------
 
 def ask_openai(prompt: str) -> str:
-    """Einfacher Wrapper (Deutsch erzwungen, kurz & präzise)."""
-    resp = client.chat.completions.create(
-        model=MODEL_DEFAULT,
-        messages=[
-            {"role": "system", "content": "Antworte ausschließlich auf Deutsch. Knapp, präzise, praxisnah."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.2,
-    )
-    return resp.choices[0].message.content.strip()
+    """Deutsch, kurz & präzise. Fällt weich zurück, wenn kein Client."""
+    if client is None:
+        return "KI nicht verfügbar (API-Key fehlt)."
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL_DEFAULT,
+            messages=[
+                {"role": "system", "content": "Antworte ausschließlich auf Deutsch. Knapp, präzise, praxisnah."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        logging.exception("OpenAI-Fehler: %s", e)
+        return "KI-Antwort fehlgeschlagen (siehe Log)."
 
 
 def _ask_openai_json(
@@ -70,16 +77,63 @@ def _ask_openai_json(
         return {"raw_text": content}
 
 
-def _swiss_style_note(humanize: bool = True) -> str:
-    base = (
-        "Schweizer Orthografie (ss statt ß). "
-        "Natürlich klingend wie hausärztliche KG-Einträge, kurz/telegraphisch; "
-    )
+def _swiss_style_note(humanize: bool) -> str:
     if humanize:
-        base += "gelegentlich minimale Tippfehler/Verkürzungen einbauen; "
-    base += "keine Floskeln, keine Romane."
-    return base
+        return (
+            "Schreibe kurz, telegraphisch. Schweizer Orthografie (ss). "
+            "Du darfst 1–2 minimale Tippfehler einbauen (z. B. Buchstabenvertauschung), "
+            "aber keine Fachbegriffe oder Zahlen verfälschen."
+        )
+    return "Schreibe kurz, telegraphisch. Schweizer Orthografie (ss). Keine Tippfehler."
 
+
+def _compose_context_for_exam(
+    anamnese_raw: str,
+    zusatzfragen: Optional[List[str]] = None,
+    zusatzfragen_qa: Optional[List[Tuple[str, str]]] = None,
+) -> str:
+    """
+    Baut einen schlanken Kontextblock: freie Anamnese (+ optionale Zusatzfragen / Q&A).
+    """
+    parts: List[str] = []
+    ana = (anamnese_raw or "").strip()
+    parts.append(f"Anamnese (wortgetreu):\n{ana if ana else 'keine Angaben'}")
+    if zusatzfragen:
+        z = [s for s in zusatzfragen if s]
+        if z:
+            parts.append("Zusatzfragen (Vorschläge):\n- " + "\n- ".join(z[:5]))
+    if zusatzfragen_qa:
+        qa_lines = [f"- {q.rstrip('?')}? → {a}" for (q, a) in zusatzfragen_qa if q and a]
+        if qa_lines:
+            parts.append("Zusatzfragen – beantwortet:\n" + "\n".join(qa_lines))
+    return "\n\n".join(parts)
+
+def _compose_context_for_assessment(
+    anamnese_raw: str,
+    befunde_text: str = "",
+    zusatzfragen: Optional[List[str]] = None,
+    zusatzfragen_qa: Optional[List[Tuple[str, str]]] = None,
+) -> str:
+    """Kombiniert Anamnese, Zusatzfragen (optional mit Antworten) und erhobene Befunde zu einem klaren Kontextblock."""
+    parts: List[str] = []
+    ana = (anamnese_raw or "").strip() or "keine Angaben"
+    parts.append(f"Anamnese (frei, wortgetreu):\n{ana}")
+
+    if zusatzfragen:
+        z = [s for s in zusatzfragen if s]
+        if z:
+            parts.append("Zusatzfragen (Systemvorschläge):\n- " + "\n- ".join(z[:5]))
+
+    if zusatzfragen_qa:
+        qa_lines = [f"- {q.rstrip('?')}? → {a}" for (q, a) in zusatzfragen_qa if q and a]
+        if qa_lines:
+            parts.append("Zusatzfragen – beantwortet (Nutzer):\n" + "\n".join(qa_lines))
+
+    bef = (befunde_text or "").strip()
+    if bef:
+        parts.append("Erhobene Befunde (aktueller Stand):\n" + bef)
+
+    return "\n\n".join(parts)
 
 # ------------------ 4 Felder – fix & fertig ------------------
 
@@ -142,19 +196,15 @@ def generate_full_entries_german(
 
     usr_payload = {"eingabetext": user_input, "kontext": context}
 
-    result = _ask_openai_json(
-        messages=[
-            {"role": "system", "content": sys_msg},
-            {"role": "user", "content": json.dumps(usr_payload, ensure_ascii=False)},
-        ]
-    )
-
-    # Red Flags nur anhängen (UI zeigt separat)
+    result = {k: (result.get(k) or "keine Angaben").strip()
+            for k in ("anamnese_text","befunde_text","beurteilung_text","prozedere_text")}
     if red_flags_list:
-        result["red_flags"] = red_flags_list
-
-    full_block = _format_full_entries_block(result)
-    return result, full_block
+        result_with_rf = dict(result)
+        result_with_rf["red_flags"] = red_flags_list
+    else:
+        result_with_rf = result
+    full_block = _format_full_entries_block(result_with_rf)
+    return result_with_rf, full_block
 
 
 # ------------------ Schritt 1: Anamnese → Lückentext ------------------
@@ -208,175 +258,233 @@ def generate_anamnese_gaptext_german(
 
     return result, fragen_text or anamnese_raw
 
+def generate_zusatzfragen_json(
+    anamnese_raw: str, answered_context: Optional[str] = ""
+) -> Dict[str, Any]:
+    """Erzeugt 2–5 Zusatzfragen (nur JSON, kein Fliesstext)."""
+    sys_msg = (
+        "Du bist ein erfahrener Hausarzt in der Schweiz.\n"
+        "Aufgabe: 2–5 gezielte, patientenverständliche Zusatzfragen. "
+        "Nur Fragen, keine Untersuchungen. Antwort NUR als JSON {\"zusatzfragen\": [...] }."
+    )
+    usr = {
+        "eingabe_freitext": anamnese_raw,
+        "bereits_beantwortet": answered_context or "",
+    }
+    result = _ask_openai_json(
+        messages=[{"role": "system", "content": sys_msg},
+                  {"role": "user", "content": json.dumps(usr, ensure_ascii=False)}]
+    )
+    # Schema-Schutz
+    if not isinstance(result, dict) or "zusatzfragen" not in result:
+        result = {"zusatzfragen": []}
+    # clamp 2–5
+    zs = result.get("zusatzfragen") or []
+    result["zusatzfragen"] = zs[:5] if len(zs) > 5 else zs
+    return result
+
 
 def generate_befunde_gaptext_german(
-    anamnese_filled: str,
-    humanize: bool = True,
-    phase: str = "initial"  # "initial" oder "persistent"
-) -> Tuple[Dict[str, Any], str]:
+    anamnese_raw: str,
+    phase: str = "initial",
+    zusatzfragen: Optional[List[str]] = None,
+    zusatzfragen_qa: Optional[List[Tuple[str, str]]] = None,
+) -> tuple[dict, str]:
     """
-    Liefert praxisnahe Befunde als Lückentext/Checkliste zum direkten Ausfüllen
-    (kein fertiger Status-Fliesstext). Return: (payload, befunde_lueckentext).
-    payload: {"befunde_lueckentext": str, "befunde_checkliste": [..]}
+    Erzeugt Lückentext + Checkliste. Verwendet Anamnese + (option.) Zusatzfragen/Q&A als Kontext.
+    Rückgabe: (payload_json, befunde_text_block)
     """
-    note = _swiss_style_note(humanize)
-
+    context = _compose_context_for_exam(anamnese_raw, zusatzfragen, zusatzfragen_qa)
     sys_msg = (
-        "Du bist ein erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
-        + note + "\n"
-        "Aufgabe: Erzeuge eine Liste praxisrelevanter körperlicher Untersuchungen, die in der Hausarztpraxis zu erheben sind und "
-        "zur Anamnese passen. Keine Vitalparameter!\n"
-        "WICHTIG:\n"
-        "- KEIN fertiger Statusbericht / kein Fliesstext.\n"
-        "- Nur ausfüllbare Punkte mit Platzhaltern/Optionen, z. B.:\n"
-        "- Keine konkreten Messwerte eintragen, nur Struktur zum Ausfüllen.\n"
-        "- Nichts doppeln, was in der Anamnese bereits beantwortet ist.\n"
-        "- phase=\"initial\": nur Basics; phase=\"persistent\": am Ende eine Zusatzzeile mit 2–3 sinnvollen Erweiterungen.\n"
-        "Antwort ausschließlich als JSON:\n"
-        "{\n"
-        "  \"befunde_lueckentext\": \"string\",\n"
-        "  \"befunde_checkliste\": [\"string\", \"...\"]\n"
-        "}\n"
-    ).strip()
-
-    usr = {
-        "anamnese_abgeschlossen": anamnese_filled,
-        "phase": phase
-    }
-
-    result = _ask_openai_json(
-        messages=[
-            {"role": "system", "content": sys_msg},
-            {"role": "user", "content": json.dumps(usr, ensure_ascii=False)},
-        ]
+        "Du bist ein erfahrener Hausarzt (Schweiz). "
+        "Erzeuge praxisnahe, rasch verfügbare Untersuchungen/Befunde als Lückentext + Checkliste. "
+        "Keine Vitalparameter. Keine Dopplungen zur Anamnese. "
+        f"Phase='{phase}'. Wenn phase='persistent': am Ende 2–3 sinnvolle Erweiterungen beginnen mit 'Bei Persistenz/Progredienz: …'. "
+        "Antworte NUR als JSON mit Feldern 'befunde_lueckentext' und 'befunde_checkliste'."
     )
-
-    bef_text = ""
-    if isinstance(result, dict):
-        bef_text = (result.get("befunde_lueckentext") or "").strip()
-
-    # Fallback, falls das Modell nichts liefert: generische, ausfüllbare Skeleton-Liste
-    if not bef_text:
-        lines = [
-            "- AZ: gut mittel reduziert",
-            "- keine weiteren Befunde",
-        ]
-        if phase == "persistent":
-            lines.append('Bei Persistenz/Progredienz: (Röntgen/US/erweitertes Labor) __')
-        bef_text = "\n".join(lines)
-
-    return result, bef_text
+    usr = {"kontext": context, "phase": phase}
+    result = _ask_openai_json([
+        {"role": "system", "content": sys_msg},
+        {"role": "user", "content": json.dumps(usr, ensure_ascii=False)}
+    ])
+    # Schema-Absicherung
+    lz = (result or {}).get("befunde_lueckentext") or "- keine Angaben"
+    chk = (result or {}).get("befunde_checkliste") or []
+    payload = {"befunde_lueckentext": lz, "befunde_checkliste": chk}
+    # Schön formatierter Block für das Textfeld
+    block = lz.strip() + ("\n\n" + "\n".join(f"- [ ] {x}" for x in chk) if chk else "")
+    return payload, block
 
 
 def on_gaptext(self):
-    raw = self.fields.get("Anamnese").get("1.0", tk.END).strip() if "Anamnese" in self.fields else ""
+    raw = self.fields["Anamnese"].get("1.0", tk.END).strip()
     if not raw:
-        from tkinter import messagebox
         messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese (frei) eingeben.")
         return
     try:
-        payload, gap = generate_anamnese_gaptext_german(raw)
+        payload = generate_zusatzfragen_json(raw)
     except Exception as e:
-        from tkinter import messagebox
-        messagebox.showerror("Fehler", f"Lückentext fehlgeschlagen:\n{e}")
+        messagebox.showerror("Fehler", f"Zusatzfragen fehlgeschlagen:\n{e}")
         return
     self.txt_gap.delete("1.0", tk.END)
-    self.txt_gap.insert(tk.END, gap)  # <— integrierter Lückentext, kein Fragenkatalog
+    for q in payload.get("zusatzfragen", []):
+        self.txt_gap.insert(tk.END, f"- {q}\n")
+
 
 
 # ------------------ Schritt 2: Befunde (Basis / optional erweitert) ------------------
 
 def suggest_basic_exams_german(
-    anamnese_filled: str,
-    humanize: bool = True,
-    phase: str = "initial"  # "initial" oder "persistent"
+    anamnese_raw: str,
+    phase: str = "initial",
+    zusatzfragen: Optional[List[str]] = None,
+    humanize: bool = False,
+    zusatzfragen_qa: Optional[List[Tuple[str, str]]] = None,
 ) -> str:
     """
-    Liefert ein fertiges Feld "Befunde" (kurze Sätze/Telegraphiestil).
-    'initial' = schlank/basisnah; 'persistent' = am Ende kurze Erweiterungen.
+    Liefert ein fertiges Feld "Befunde" (kurze Sätze/Telegraphie).
+    phase: 'initial' = schlank/basisnah; 'persistent' = am Ende Erweiterungen.
+    Nutzt Anamnese + (optional) Zusatzfragen/Q&A als Kontext.
     """
-    note = _swiss_style_note(humanize)
+    # Phase absichern
+    phase_norm = "persistent" if str(phase).lower().strip() == "persistent" else "initial"
+
+    # Kontext bauen
+    ctx = _compose_context_for_exam(anamnese_raw, zusatzfragen, zusatzfragen_qa)
+
+    # Stil-Hinweis (falls deine Helferfunktion existiert)
+    try:
+        note = _swiss_style_note(humanize)  # type: ignore[name-defined]
+    except Exception:
+        # Fallback: sachlich, kurz, CH-Orthografie
+        note = (
+            "Schreibe sachlich, telegraphisch, ohne Floskeln. "
+            "Schweizer Orthografie (ss, keine ß). Keine erfundenen Vitalparameter/Dosen."
+        )
 
     sys_msg = (
         "Du bist erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
-        + note + "\n"
-        "Nur Untersuchungen, die in der Grundversorgung rasch verfügbar sind. "
-        "Kein Overkill; dedupliziere gegen bereits erhobene Angaben.\n"
+        f"{note}\n"
+        "Aufgabe: Erzeuge praxisnahe, rasch verfügbare Untersuchungen/Befunde als Freitext "
+        "(kein JSON). Nur Punkte, die in der Grundversorgung sofort machbar sind. "
+        "Kein Overkill; dedupliziere gegen bereits erhobene Angaben."
     ).strip()
 
-    usr = {"anamnese_abgeschlossen": anamnese_filled, "phase": phase}
-
-    prompt = (
-        sys_msg
-        + "\n\nVorgaben:\n"
-        "- Zuerst Kurzstatus: AZ .\n"
-        "- Dann fokussierte körperliche Untersuchung gemäss Leitsymptom\n"
-        "- Optionale Basisgeraete/POCT: EKG, Lungenfunktion, Labor (3–6 relevante Parameter), Schellong.\n"
-        "- Bei phase=\"persistent\": am Ende eine Zeile \"Bei Persistenz/Progredienz:\" mit 2–3 sinnvollen erweiterten Untersuchungen.\n"
+    vorgaben = (
+        "Vorgaben:\n"
+        "- Zuerst Kurzstatus: AZ (kurz, objektiv).\n"
+        "- Danach fokussierte körperliche Untersuchung gemäss Leitsymptom.\n"
+        "- Optional Basisgeräte/POCT, wenn sinnvoll: EKG, Lungenfunktion, Labor (3–6 relevante Parameter), Schellong.\n"
+        "- Bei phase=\"persistent\": am Ende genau eine Zeile beginnen mit "
+        "\"Bei Persistenz/Progredienz:\" und 2–3 sinnvolle weiterführende Untersuchungen.\n"
+        "- Keine Vitalparameter notieren, keine Medikamente oder Diagnosen, nur Untersuchungen/Befunde.\n"
         "- Keine Dopplungen zu bereits erwähnten/erhobenen Punkten.\n"
-        "- Schweizer Standards.\n\n"
-        "Antwort: Gib nur das Feld \"Befunde\" als zusammenhängenden, praxisnahen Text (keine JSON).\n"
+        "- Schweizer Standards."
     )
 
-    return ask_openai(prompt + "\n\n" + json.dumps(usr, ensure_ascii=False))
+    # Nutzlast (klar getrennt, damit das Modell strukturiert arbeiten kann)
+    usr = {
+        "phase": phase_norm,
+        "kontext": ctx,
+    }
+
+    prompt = (
+        f"{sys_msg}\n\n{vorgaben}\n\n"
+        "Antwort: Gib NUR das Feld «Befunde» als zusammenhängenden, praxisnahen Text "
+        "(Freitext, keine Listen mit [ ] und kein JSON).\n\n"
+        f"{json.dumps(usr, ensure_ascii=False)}"
+    )
+
+    # LLM-Aufruf
+    out = ask_openai(prompt)  # erwartet String-Return deiner bestehenden Infrastruktur
+    return (out or "").strip()
 
 
 # ------------------ Schritt 3: Beurteilung + Prozedere ------------------
 
 def generate_assessment_and_plan_german(
-    anamnese_final: str,
-    befunde_final: str,
-    humanize: bool = True,
-    phase: str = "initial"
-) -> Tuple[str, str]:
+    anamnese_raw: str,
+    befunde: str = "",
+    zusatzfragen: Optional[List[str]] = None,
+    zusatzfragen_qa: Optional[List[Tuple[str, str]]] = None,
+    humanize: bool = False,
+) -> tuple[str, str]:
     """
-    Erzeugt 'Beurteilung' (Arbeitsdiagnose + 2–3 DD) und 'Prozedere' (Praxisplan),
-    dedupliziert, knapp, natürlich, Schweiz-Style.
+    Erzeugt:
+      - beurteilung_text: Verdachtsdiagnose + 2–4 DDs, jeweils kurz begründet.
+      - prozedere_text: Bulletpoints (nächste Schritte in der Grundversorgung, Verlauf/Kontrolle,
+                        vorzeitige Wiedervorstellung (allgemein, ohne Red-Flag-Listen), Medikation nur allgemein).
+        Abschlusszeile: "Bei Persistenz/Progredienz: …".
+
+    Nutzt kombinierte Informationen aus Anamnese, (beantworteten) Zusatzfragen und erhobenen Befunden.
     """
+    # Stilhinweis (falls vorhanden)
     try:
-        red_flags_data = load_red_flags(RED_FLAGS_PATH)
-        rf_hits = check_red_flags(anamnese_final + "\n" + befunde_final, red_flags_data, return_keywords=True) or []
-        red_flags_list = [f"{kw} – {msg}" for (kw, msg) in rf_hits]
+        note = _swiss_style_note(humanize)  # noqa: F821  (falls Helper in deinem Projekt existiert)
     except Exception:
-        red_flags_list = []
+        note = ("Schreibe kurz, telegraphisch, sachlich. Schweizer Orthografie (ss). "
+                "Keine Dosierungen oder Vitalparameter erfinden. Keine Red-Flags im Text.")
 
-    note = _swiss_style_note(humanize)
+    ctx = _compose_context_for_assessment(anamnese_raw, befunde, zusatzfragen, zusatzfragen_qa)
 
-    sys_part = (
-        "Du bist ein erfahrener Husarzt in einer Schweizer Hausarztpraxis.\n"
-        + note + "\n"
-        "Nur notwendige Infos; keine Wiederholungen von bereits Gesagtem. "
-        "Schweizer/Europäische Guidelines priorisieren (danach UK/US). "
-        "Kein ß, nur ss.\n"
-    ).strip()
-
-    usr = {"anamnese": anamnese_final, "befunde": befunde_final, "phase": phase, "red_flags": red_flags_list}
-
-    prompt = (
-        sys_part
-        + "\n\nErzeuge zwei fertige Felder:\n\n"
-        "Beurteilung:\n"
-        "- Verdachtsdiagnose (kurz, plausibel aus Anamnese/Befunden) mit kurzer Begründung.\n"
-        "- 2–3 DD (nur wenn klinisch sinnvoll), ohne Wiederholung von Befunden\n"
-        "- Falls Red Flags vorhanden: kurze Einordnung dort, sonst weglassen\n\n"
-        "Prozedere:\n"
-        "- Unterpunkte, kein Fliesstext. Konkrete nächste Schritte in der Praxis (kurze, klare Bulletpoints)\n"
-        "- Vorzeitige Wiedervorstellung\n"
-        "- Verlauf/Kontrolle (realistisches Intervall)\n"
-        "- Medikamentöse Massnahmen nur allgemein (keine erfundenen Dosierungen)\n"
-        "- Bei \"persistent\": kurze Zeile zu weiterführender Abklärung/Überweisung\n\n"
-        "Antwort: gib zuerst Beurteilung, dann eine Leerzeile, dann Prozedere.\n"
+    sys_msg = (
+        "Du bist erfahrener Hausarzt in der Schweiz. "
+        "Ziel: kurze, praxisnahe Beurteilung und ein konkretes Prozedere für die Grundversorgung. "
+        f"{note}"
     )
 
-    text = ask_openai(prompt + "\n\n" + json.dumps(usr, ensure_ascii=False))
+    richtlinien = (
+        "Richtlinien:\n"
+        "- Beurteilung: Verdachtsdiagnose zuerst; 2–4 relevante Differenzialdiagnosen, je 1 kurze Begründung "
+        "(ohne Wiederholung langer Befunde; keine Vitalparameter; keine Dosierungen).\n"
+        "- Prozedere: Bulletpoints; nächste Schritte (ausschliesslich rasch verfügbare Untersuchungen/POCT), "
+        "Verlauf/Kontrolle, vorzeitige Wiedervorstellung bei Warnzeichen (allgemein formuliert, "
+        "keine konkrete Red-Flag-Liste), Medikation nur allgemein. "
+        "Am Ende genau eine Zeile mit \"Bei Persistenz/Progredienz:\" und 1–2 sinnvollen Abklärungen/Überweisungen.\n"
+        "- Schweizer Standards. Keine Red Flags im Text aufzählen."
+    )
 
-    parts = [p.strip() for p in text.strip().split("\n\n", 1)]
-    beurteilung = parts[0] if parts else ""
-    prozedere = parts[1] if len(parts) > 1 else ""
+    user_payload = {
+        "kontext": ctx,
+        "schema": {"beurteilung_text": "string", "prozedere_text": "string"},
+        "sprache": "Deutsch (Schweiz)",
+        "stil": "kurz, telegraphisch",
+    }
 
-    # Red Flags NICHT einbauen (werden im UI separat gezeigt)
-    return beurteilung, prozedere
+    prompt_user = (
+        f"{richtlinien}\n\n"
+        "Antwort: Gib NUR gültiges JSON mit GENAU diesen Feldern (keine weiteren):\n"
+        "{\n"
+        '  "beurteilung_text": "<kurzer Text>",\n'
+        '  "prozedere_text": "<Bulletpoints/kurze Sätze>"\n'
+        "}\n\n"
+        f"{json.dumps(user_payload, ensure_ascii=False)}"
+    )
 
+    # Primär: strukturierte JSON-Antwort
+    try:
+        result = _ask_openai_json([   # noqa: F821  (dein vorhandener JSON-Helper)
+            {"role": "system", "content": sys_msg},
+            {"role": "user", "content": prompt_user},
+        ])
+    except Exception:
+        result = None
+
+    beurteilung = (result or {}).get("beurteilung_text") if isinstance(result, dict) else None
+    prozedere  = (result or {}).get("prozedere_text") if isinstance(result, dict) else None
+
+    # Fallback: unstrukturierter Aufruf (falls JSON-Helper nicht verfügbar)
+    if not (beurteilung and prozedere):
+        try:
+            raw = ask_openai(sys_msg + "\n\n" + prompt_user)  # noqa: F821  (dein Fallback-Helper)
+            # sehr schlanke Rettung, falls Rohtext zurückkommt
+            beurteilung = beurteilung or (raw.split("Prozedere:")[0].strip() if "Prozedere:" in raw else raw.strip())
+            prozedere  = prozedere  or (raw.split("Prozedere:", 1)[1].strip() if "Prozedere:" in raw else "• keine Angaben")
+        except Exception:
+            beurteilung = beurteilung or "keine Angaben"
+            prozedere  = prozedere  or "• keine Angaben"
+
+    return (beurteilung or "keine Angaben").strip(), (prozedere or "• keine Angaben").strip()
 
 # ------------------ Ältere/zusätzliche Generatoren (optional nutzbar) ------------------
 
@@ -462,10 +570,6 @@ def generate_procedure(beurteilung: str, befunde: str, anamnese: str) -> str:
     except Exception:
         red_flags = []
 
-    red_flag_note = ""
-    if red_flags:
-        red_flag_note = "⚠️ Red Flags:\n" + "\n".join([f"- {keyword} – {message}" for keyword, message in red_flags]) + "\n\n"
-
     prompt = (
         PROMPT_PREFIX
         + "\n\nBeurteilung:\n"
@@ -479,4 +583,4 @@ def generate_procedure(beurteilung: str, befunde: str, anamnese: str) -> str:
         "- Weitere Abklärungen bei Ausbleiben der Besserung\n"
     )
     procedure = ask_openai(prompt)
-    return red_flag_note + procedure
+    return procedure
