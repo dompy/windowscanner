@@ -24,23 +24,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements_psychology.txt
 
-      - name: Build EXE (custom paths)
+      - name: Verify resources
+        shell: cmd
+        run: |
+          echo Workspace is: %GITHUB_WORKSPACE%
+          dir /b %GITHUB_WORKSPACE%\red_flags.json
+          dir /b %GITHUB_WORKSPACE%\psych_red_flags.json
+
+      - name: Build EXE (OneFile, absolute paths)
         shell: cmd
         run: |
           pyinstaller --noconsole --onefile ^
             --name PraxisAssistantPsych ^
-            --distpath out ^
-            --workpath .build ^
-            --specpath .build ^
-            ui_assistant_stepflow.py ^
-            --add-data "red_flags.json;." ^
-            --add-data "psych_red_flags.json;."
+            %GITHUB_WORKSPACE%\ui_assistant_stepflow.py ^
+            --add-data "%GITHUB_WORKSPACE%\red_flags.json;." ^
+            --add-data "%GITHUB_WORKSPACE%\psych_red_flags.json;."
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: PraxisAssistantPsych
-          path: out/PraxisAssistantPsych.exe
+          path: dist/PraxisAssistantPsych.exe
 
   attach-to-release:
     needs: build-windows
