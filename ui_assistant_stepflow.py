@@ -1,14 +1,14 @@
 import os
 import tkinter as tk
-from gpt_logic import generate_befunde_gaptext_german
 from tkinter import scrolledtext, messagebox
 
-# Wir nutzen NUR das Tool – keine Word-Integration
+# Logikfunktionen (Psychologie)
 from gpt_logic import (
     generate_anamnese_gaptext_german,
-    suggest_basic_exams_german,
+    generate_befunde_gaptext_german,
     generate_assessment_and_plan_german,
     generate_full_entries_german,
+    resolve_red_flags_path,
 )
 
 # Red Flags separat im UI anzeigen
@@ -22,41 +22,42 @@ except Exception:
 class ConsultationAssistant:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("🧠 Praxis-Assistent (ohne Word)")
+        self.root.title("🧠 Psychologie-Assistent (ohne Word)")
         self.root.geometry("1000x800")
         self.root.configure(bg="#222")
 
-        self.fields = {}  # "Anamnese", "Befunde", "Beurteilung", "Prozedere"
+        self.fields = {}  # Keys: "Anamnese", "Befunde", "Beurteilung", "Prozedere"
 
         # ---------- Layout ----------
         # Anamnese (frei)
         self._label("Anamnese (frei)")
         self.fields["Anamnese"] = self._text(height=6)
 
-        # 1) Lückentext
-        self._button("1) Lückentext erzeugen (integriert)", self.on_gaptext)
+        # 1) Ergänzende Anamnese (Zusatzfragen)
+        self._button("Ergänzende Anamnese", self.on_gaptext)
 
-        self._label("Anamnese – Lückentext (editierbar)")
+        self._label("Ergänzende Anamnese (editierbar)")
         self.txt_gap = self._text(height=6)
 
-        # 2) Untersuchungen
+        # 2) Psychopathologischer Befund (Lückentext)
         toolbar = tk.Frame(self.root, bg="#222")
         toolbar.pack(fill="x", padx=8, pady=(0, 4))
-        tk.Button(toolbar, text="2) Befunde (Lückentext, Basis)", command=self.on_befunde_gaptext).pack(side="left", padx=4)
-        tk.Button(toolbar, text="➕ Mehr (bei Persistenz)", command=lambda: self.on_befunde_gaptext(phase="persistent")).pack(side="left", padx=4)
+        tk.Button(toolbar, text="Psychopathologischer Befund (Lückentext)", command=self.on_befunde_gaptext).pack(
+            side="left", padx=4
+        )
 
-        self._label("Befunde (werden überschrieben)")
+        self._label("Psychopathologischer Befund")
         self.fields["Befunde"] = self._text(height=6)
 
-        # 3) Beurteilung + Prozedere
-        self._button("3) Beurteilung + Prozedere finalisieren", self.on_finalize)
+        # 3) Einschätzung + Prozedere
+        self._button("Einschätzung + Prozedere", self.on_finalize)
 
         cols = tk.Frame(self.root, bg="#222")
         cols.pack(fill="both", expand=True, padx=8)
         left = tk.Frame(cols, bg="#222"); left.pack(side="left", fill="both", expand=True, padx=(0, 4))
         right = tk.Frame(cols, bg="#222"); right.pack(side="left", fill="both", expand=True, padx=(4, 0))
 
-        tk.Label(left, text="Beurteilung", fg="white", bg="#222", anchor="w").pack(fill="x")
+        tk.Label(left, text="Einschätzung", fg="white", bg="#222", anchor="w").pack(fill="x")
         self.fields["Beurteilung"] = self._text(parent=left, height=8)
 
         tk.Label(right, text="Prozedere", fg="white", bg="#222", anchor="w").pack(fill="x")
@@ -79,11 +80,15 @@ class ConsultationAssistant:
 
     # ---------- UI helpers ----------
     def _label(self, text: str):
-        tk.Label(self.root, text=text, fg="white", bg="#222", anchor="w", font=("Arial", 10, "bold")).pack(fill="x", padx=8, pady=(8, 0))
+        tk.Label(self.root, text=text, fg="white", bg="#222", anchor="w", font=("Arial", 10, "bold")).pack(
+            fill="x", padx=8, pady=(8, 0)
+        )
 
     def _text(self, height=6, parent=None):
         parent = parent or self.root
-        t = scrolledtext.ScrolledText(parent, height=height, wrap=tk.WORD, bg="#111", fg="white", insertbackground="white")
+        t = scrolledtext.ScrolledText(
+            parent, height=height, wrap=tk.WORD, bg="#111", fg="white", insertbackground="white"
+        )
         t.pack(fill="both", expand=False, padx=8, pady=(4, 0))
         return t
 
@@ -99,49 +104,25 @@ class ConsultationAssistant:
         try:
             payload, gap = generate_anamnese_gaptext_german(raw)
         except Exception as e:
-            messagebox.showerror("Fehler", f"Lückentext fehlgeschlagen:\n{e}")
+            messagebox.showerror("Fehler", f"Ergänzende Anamnese fehlgeschlagen:\n{e}")
             return
         self.txt_gap.delete("1.0", tk.END)
         self.txt_gap.insert(tk.END, gap)
 
-    def on_befunde_gaptext(self, phase="initial"):
+    def on_befunde_gaptext(self):
         gap = self.txt_gap.get("1.0", tk.END).strip() if hasattr(self, "txt_gap") else ""
         anamnese_for_exams = gap or (self.fields.get("Anamnese").get("1.0", tk.END).strip() if "Anamnese" in self.fields else "")
         if not anamnese_for_exams:
-            from tkinter import messagebox
             messagebox.showwarning("Hinweis", "Keine Anamnese vorhanden.")
             return
         try:
-            payload, bef_text = generate_befunde_gaptext_german(anamnese_for_exams, phase=phase)
+            payload, bef_text = generate_befunde_gaptext_german(anamnese_for_exams, phase="initial")
         except Exception as e:
-            from tkinter import messagebox
             messagebox.showerror("Fehler", f"Befunde-Lückentext fehlgeschlagen:\n{e}")
             return
 
-        if phase == "initial":
-            self.fields["Befunde"].delete("1.0", tk.END)
-            self.fields["Befunde"].insert(tk.END, bef_text or "")
-        else:
-            current = self.fields["Befunde"].get("1.0", tk.END).strip()
-            if current:
-                self.fields["Befunde"].insert(tk.END, "\n\n")
-            self.fields["Befunde"].insert(tk.END, bef_text or "")
-
-
-
-    def on_basic_exams(self, phase="initial"):
-        gap = self.txt_gap.get("1.0", tk.END).strip()
-        anamnese_for_exams = gap or self.fields["Anamnese"].get("1.0", tk.END).strip()
-        if not anamnese_for_exams:
-            messagebox.showwarning("Hinweis", "Keine Anamnese vorhanden.")
-            return
-        try:
-            bef = suggest_basic_exams_german(anamnese_for_exams, phase=phase)
-        except Exception as e:
-            messagebox.showerror("Fehler", f"Untersuchungen fehlgeschlagen:\n{e}")
-            return
         self.fields["Befunde"].delete("1.0", tk.END)
-        self.fields["Befunde"].insert(tk.END, bef)
+        self.fields["Befunde"].insert(tk.END, bef_text or "")
 
     def on_finalize(self):
         anamnese_final = self.txt_gap.get("1.0", tk.END).strip() or self.fields["Anamnese"].get("1.0", tk.END).strip()
@@ -169,7 +150,6 @@ class ConsultationAssistant:
 
     def on_generate_full_direct(self):
         """Ein Klick: 4 Felder voll generieren + Red Flags + Gesamtausgabe."""
-        # Kombiniere vorhandenen Inhalt als Kontext
         parts = []
         anamnese_raw = self.fields["Anamnese"].get("1.0", tk.END).strip()
         gap = self.txt_gap.get("1.0", tk.END).strip()
@@ -180,9 +160,12 @@ class ConsultationAssistant:
         bef = self.fields["Befunde"].get("1.0", tk.END).strip()
         beu = self.fields["Beurteilung"].get("1.0", tk.END).strip()
         proz = self.fields["Prozedere"].get("1.0", tk.END).strip()
-        if bef: parts.append("Befunde: " + bef)
-        if beu: parts.append("Beurteilung: " + beu)
-        if proz: parts.append("Prozedere: " + proz)
+        if bef:
+            parts.append("Befunde: " + bef)
+        if beu:
+            parts.append("Beurteilung: " + beu)
+        if proz:
+            parts.append("Prozedere: " + proz)
 
         combined = "\n".join(parts).strip() or (anamnese_src or "")
         if not combined:
@@ -217,12 +200,11 @@ class ConsultationAssistant:
         self.output_full.insert(tk.END, full_block)
 
     def update_red_flags(self, anamnese_text: str, befunde_text: str):
-        """Lokal Red Flags prüfen (falls Modul vorhanden)."""
+        """Lokal Red Flags prüfen (Psychologie bevorzugt, Fallback medizinisch)."""
         rf_list = []
         if load_red_flags and check_red_flags:
             try:
-                here = os.path.dirname(os.path.abspath(__file__))
-                path = os.path.join(here, "red_flags.json")
+                path = resolve_red_flags_path(prefer_psych=True)
                 data = load_red_flags(path)
                 rf_hits = check_red_flags(anamnese_text + "\n" + befunde_text, data, return_keywords=True) or []
                 rf_list = [f"{kw} – {msg}" for (kw, msg) in rf_hits]
@@ -242,10 +224,10 @@ class ConsultationAssistant:
         parts.append("Anamnese:")
         parts.append(anamnese or "keine Angaben")
         parts.append("")
-        parts.append("Befunde:")
+        parts.append("Psychopathologischer Befund:")
         parts.append(befunde or "keine Angaben")
         parts.append("")
-        parts.append("Beurteilung:")
+        parts.append("Einschätzung:")
         parts.append(beurteilung or "keine Angaben")
         parts.append("")
         parts.append("Prozedere:")

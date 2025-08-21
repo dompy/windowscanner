@@ -1,0 +1,90 @@
+{
+  "Suizidalität": [
+    {
+      "keywords": ["Suizidgedanken", "Todeswunsch", "sich etwas antun", "nicht mehr leben", "Leben beenden", "Sterben wollen"],
+      "message": "Hinweis auf Suizidalität – sofortige Risikoabklärung (Idee/Plan/Mittel/Absicht), Sicherheitsmassnahmen, Krisenplan; bei Akutgefahr Notfallpsychiatrie einbeziehen."
+    },
+    {
+      "keywords": ["Suizidplan", "Plan gemacht", "Mittel besorgt", "Abschiedsbrief", "Abschied", "konkrete Absicht"],
+      "message": "Akute Suizidalität mit Plan/Mitteln – unmittelbare Schutzmassnahmen, Notfallbeurteilung, keine Alleinlassung, Einbezug Notfallpsychiatrie."
+    },
+    {
+      "keywords": ["Suizidversuch", "Überdosis", "Erhängen", "Sprung", "Vergiftung"],
+      "message": "Frischer oder kürzlicher Suizidversuch – medizinische Stabilisierung prüfen, sofortige psychiatrische Beurteilung und engmaschige Sicherung."
+    }
+  ],
+  "Fremdgefährdung/Gewalt": [
+    {
+      "keywords": ["jemandem schaden", "jemanden verletzen", "Tötungsfantasien", "Tötungsplan", "Rache", "Gewaltdrohung"],
+      "message": "Hinweis auf Fremdgefährdung – sofortige Risikoabschätzung, Schutz Dritter, ggf. Polizei/Notfallpsychiatrie, Dokumentation."
+    },
+    {
+      "keywords": ["Waffe", "Messer", "Pistole", "Schusswaffe", "Waffen zu Hause"],
+      "message": "Zugang zu Waffen bei erhöhter Aggressivität – akute Gefährdungsbeurteilung, Entwaffnung/Schutzmassnahmen prüfen, Notfallstellen einbeziehen."
+    }
+  ],
+  "Psychose/Manie": [
+    {
+      "keywords": ["Stimmen hören", "Halluzinationen", "Wahn", "Verfolgung", "Gedankenlautwerden", "Realitätsverlust"],
+      "message": "Psychotische Symptome – Dringlichkeitsbeurteilung, Notfallpsychiatrie bei ausgeprägter Desorganisation oder Gefährdung, Sicherheitsplanung."
+    },
+    {
+      "keywords": ["kein Schlaf", "seit Tagen nicht geschlafen", "Grössenideen", "Geld ausgegeben", "Kaufrausch", "Risikoverhalten", "manisch"],
+      "message": "Hinweis auf Manie/Hypomanie – rasche psychiatrische Beurteilung, Gefährdung und Steuerungsfähigkeit prüfen."
+    }
+  ],
+  "Akute Traumareaktion/Dissoziation": [
+    {
+      "keywords": ["Flashbacks", "Albträume", "Intrusionen", "Trigger", "Schreckhaftigkeit"],
+      "message": "Ausgeprägte Traumareaktion – Stabilisierung/Sicherheitsplan, Psychoedukation, Indikation Notfall/Schutz prüfen."
+    },
+    {
+      "keywords": ["Dissoziation", "Zeitlücken", "Depersonalisation", "Derealisation"],
+      "message": "Starke Dissoziation – Sicherheitsrisiko (z.B. Weglaufen/Unfälle) einschätzen, Erdung/Selbsthilfestrategien, ggf. Notfallpsychiatrie."
+    }
+  ],
+  "Selbstverletzendes Verhalten (ohne Suizidabsicht)": [
+    {
+      "keywords": ["Ritzen", "Schneiden", "Verbrennen", "sich verletzen", "Selbstverletzung"],
+      "message": "Akutes NSSI – medizinische Wundversorgung prüfen, Risikoaufklärung, Skills/Krisenplan; Suizidalität differenziert abklären."
+    }
+  ],
+  "Schwere Essstörung": [
+    {
+      "keywords": ["starke Gewichtsabnahme", "extrem abgenommen", "Untergewicht", "nichts essen", "Erbrechen nach Essen", "Essanfälle"],
+      "message": "Hinweis auf schwere Essstörung – medizinische Risiken (Dehydratation/Elektrolyte) ärztlich abklären, engmaschige Überwachung und fachpsychiatrische Mitbeurteilung."
+    }
+  ],
+  "Peripartale Krise": [
+    {
+      "keywords": ["Wochenbett", "postpartal", "Baby schaden", "Gedanken dem Kind zu schaden", "Stimmen zum Baby"],
+      "message": "Peripartale Krise/psychotische Symptome – hohe Dringlichkeit, Schutz von Mutter/Kind, sofortige fachpsychiatrische Beurteilung."
+    }
+  ],
+  "Substanzbezogene Krisen": [
+    {
+      "keywords": ["Überdosis", "Opiate", "Benzodiazepine", "Kokain", "Mischkonsum", "intoxikiert"],
+      "message": "Mögliche Intoxikation – medizinische Stabilität/Notfall abklären, anschliessend Sucht-/Psychiatrieanbindung."
+    },
+    {
+      "keywords": ["Entzug", "Delir", "zittern", "Schweissausbrüche", "Halluzinationen nach Absetzen"],
+      "message": "Hinweis auf Entzug/Delir – ärztliche Notfallabklärung, danach Sucht-/Psychiatrieversorgung organisieren."
+    }
+  ],
+  "Akute Verwirrtheit/Kognition": [
+    {
+      "keywords": ["verwirrt", "desorientiert", "Orientierung verloren", "akut verwirrt"],
+      "message": "Akute Verwirrtheit – Delir/Demenzverschlechterung medizinisch ausschliessen; Sicherheit/Betreuung sicherstellen, interdisziplinär koordinieren."
+    }
+  ],
+  "Häusliche Gewalt/Kindesschutz": [
+    {
+      "keywords": ["Gewalt zu Hause", "geschlagen", "Missbrauch", "Zwang", "bedroht", "Stalking"],
+      "message": "Hinweis auf Gewalt/Abhängigkeit – Sicherheitsplanung, Schutzangebote/Hotlines, ggf. Polizei/Kindesschutz einbeziehen, dokumentieren."
+    },
+    {
+      "keywords": ["Kind gefährdet", "Kindeswohl", "Kind misshandelt", "Kindesmissbrauch"],
+      "message": "Kindesschutz relevant – Meldung/Abklärung nach lokalen Vorgaben, Schutzmassnahmen priorisieren."
+    }
+  ]
+}
