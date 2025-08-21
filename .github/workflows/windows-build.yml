@@ -40,12 +40,6 @@ jobs:
             --add-data "%GITHUB_WORKSPACE%\red_flags.json;." ^
             --add-data "%GITHUB_WORKSPACE%\psych_red_flags.json;."
 
-      # ⬇️ HIER .BAT ins dist/ kopieren (damit sie neben der EXE landet)
-      - name: Copy launcher BAT (optional)
-        if: ${{ hashFiles('start_PraxisAssistantPsych.bat') != '' }}
-        shell: cmd
-        run: copy /y start_PraxisAssistantPsych.bat dist\
-
       # ⬇️ und DANN beide Dateien zusammen als Artifact hochladen
       - name: Upload artifact
         uses: actions/upload-artifact@v4
