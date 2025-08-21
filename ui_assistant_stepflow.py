@@ -1,3 +1,5 @@
+# ui_assistant_stepflow.py
+
 import os
 import tkinter as tk
 from gpt_logic import generate_befunde_gaptext_german

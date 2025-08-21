@@ -1,21 +1,14 @@
-# gpt_logic.py  — CLEAN & SWISS-STYLE
- 
-# gestern abend schüttelfrost, dann gliederschmerzen, fieber 39°, verwirrt gewesen, auf dafalgan fieber regredient.
-# seit 3 tagen husten mit gelb-grünem auswurf, atemnot beim treppensteigen, letzte nacht leicht fieber, kein brustschmerz.
-# seit heute morgen starke schmerzen im rechten unterbauch, übelkeit, kein erbrechen, kein durchfall, kein fieber gemessen.
-# vor einer woche umgeknickt, seitdem schwellung und schmerz am rechten sprunggelenk, belastung kaum möglich, keine offene wunde.
-# seit 2 wochen müde, blass, appetitlos, in letzter zeit häufig schwindel beim aufstehen, keine magen-darm-beschwerden.
-# seit gestern juckender ausschlag an beiden armen, nach gartenarbeit aufgetreten, keine atemnot, kein fieber.
-
 import os
 import json
-import tkinter as tk
-from tkinter import scrolledtext, messagebox
+import logging
 from typing import Any, Dict, List, Optional, Tuple
-from openai import OpenAI
-from red_flags_checker import check_red_flags, load_red_flags
 
-# ------------------ Config & Client ------------------
+import tkinter as tk  # nur für Typverweise in Callbacks
+from openai import OpenAI
+
+# -----------------------------------------------------------------------------
+# Konfiguration & Setup
+# -----------------------------------------------------------------------------
 
 MODEL_DEFAULT = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
@@ -28,22 +21,57 @@ client = OpenAI(api_key=api_key)
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 RED_FLAGS_PATH = os.path.join(THIS_DIR, "red_flags.json")
 
+# Logging (praxisnah, schlank)
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
 # Globaler Stil (kann in einzelnen Funktionen ergänzt werden)
 PROMPT_PREFIX = (
-    "Beziehe dich auf anerkannte medizinische Guidelines (z. B. smarter medicine, SSGIM, EBM, Hausarztmedizin Schweiz). "
+    "Beziehe dich auf anerkannte medizinische Guidelines (Schweiz/Europa priorisiert; danach UK/US). "
     "Antworte bevorzugt stichpunktartig (ausser explizit Sätze gefordert), kurz, präzise, praxisnah (Schweiz). "
-    "Schweizer Orthografie (ss statt ß)."
+    "Schweizer Orthografie (ss statt ß). "
 )
 
+# Hybrid-Kompetenz: Hausarzt + Spezialwissen bei Bedarf (mehr Tiefe, aber praxisnah)
+EXTRA_DEPTH_NOTE = (
+    "Du bist ein erfahrener Hausarzt in der Schweiz. Ziehe bei Bedarf Spezialistenwissen (Innere Medizin, "
+    "Infektiologie, Pneumologie, Kardiologie, Chirurgie usw.) hinzu, priorisiere aber stets die hausärztliche "
+    "Praxisrelevanz. Geh eine Ebene tiefer, wo sinnvoll: \n"
+    "- Bei Infekten/entzündlichen Zuständen: nenne den wahrscheinlichsten Erreger/Mechanismus.\n"
+    "- Bei Differentialdiagnosen: gib für jede 1–2 Stichworte zur Begründung (klinisch/epidemiologisch/pathophysiologisch).\n"
+    "- Bei Therapie: nenne Substanzklasse bzw. erstlinientaugliche Wirkstoffe (generisch), keine Dosierungen.\n"
+)
 
-# ------------------ Low-level Helpers ------------------
+# -----------------------------------------------------------------------------
+# Red-Flags-Loader (optional)
+# -----------------------------------------------------------------------------
+
+def load_red_flags(path: str) -> Dict[str, Any]:
+    try:
+        from red_flags_checker import load_red_flags as _load
+        return _load(path)
+    except Exception:
+        return {}
+
+
+def check_red_flags(text: str, data: Dict[str, Any], return_keywords: bool = True):
+    try:
+        from red_flags_checker import check_red_flags as _check
+        return _check(text, data, return_keywords=return_keywords)
+    except Exception:
+        return []
+
+
+# -----------------------------------------------------------------------------
+# Low-level OpenAI Helper
+# -----------------------------------------------------------------------------
 
 def ask_openai(prompt: str) -> str:
     """Einfacher Wrapper (Deutsch erzwungen, kurz & präzise)."""
     resp = client.chat.completions.create(
         model=MODEL_DEFAULT,
         messages=[
-            {"role": "system", "content": "Antworte ausschließlich auf Deutsch. Knapp, präzise, praxisnah."},
+            {"role": "system", "content": "Antworte ausschliesslich auf Deutsch. Knapp, präzise, praxisnah."},
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
@@ -54,7 +82,7 @@ def ask_openai(prompt: str) -> str:
 def _ask_openai_json(
     messages: List[Dict[str, str]],
     model: str = MODEL_DEFAULT,
-    temperature: float = 0.2
+    temperature: float = 0.2,
 ) -> Dict[str, Any]:
     """Antwort als JSON-Objekt erzwingen (mit Fallback)."""
     resp = client.chat.completions.create(
@@ -67,6 +95,7 @@ def _ask_openai_json(
     try:
         return json.loads(content)
     except json.JSONDecodeError:
+        logger.warning("JSON-Parsing fehlgeschlagen – Rohtext zurückgegeben")
         return {"raw_text": content}
 
 
@@ -81,11 +110,13 @@ def _swiss_style_note(humanize: bool = True) -> str:
     return base
 
 
-# ------------------ 4 Felder – fix & fertig ------------------
+# -----------------------------------------------------------------------------
+# 4 Felder – fix & fertig
+# -----------------------------------------------------------------------------
 
 def _format_full_entries_block(payload: Dict[str, Any]) -> str:
     """Kopierfertiger Block mit allen vier Feldern (Red Flags separat im UI)."""
-    parts = []
+    parts: List[str] = []
     parts.append("Anamnese:")
     parts.append((payload.get("anamnese_text") or "keine Angaben").strip())
     parts.append("")
@@ -102,7 +133,7 @@ def _format_full_entries_block(payload: Dict[str, Any]) -> str:
 
 def generate_full_entries_german(
     user_input: str,
-    context: Optional[Dict[str, Any]] = None
+    context: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, str], str]:
     """
     Baut vier dokumentationsfertige Felder (Deutsch):
@@ -119,19 +150,21 @@ def generate_full_entries_german(
     except Exception:
         red_flags_list = []
 
-    # System-Prompt (kein f-string, damit wir sicher vor Backslash-Problemen sind)
+    # System-Prompt
     sys_msg = (
         "Du bist ein erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
+        + EXTRA_DEPTH_NOTE
+        + "\n"
         "Ziel: Erzeuge vier dokumentationsfertige Felder (Deutsch), direkt kopierbar.\n"
         "WICHTIG:\n"
         "- Nichts erfinden. Wo Angaben fehlen: \"keine Angaben\", \"nicht erhoben\" oder \"noch ausstehend\".\n"
         "- Stil:\n"
-        "  • Anamnese: kurz/telegraphisch; Dauer, Lokalisation/Qualität, relevante zu erfragende Begleitsymptome auflisten, relevante zu erfragende Vorerkrankungen/Medikation auflisten, Kontext.\n"
+        "  • Anamnese: kurz/telegraphisch; Dauer, Lokalisation/Qualität, relevante zu erfragende Begleitsymptome/Vorerkrankungen/Medikation auflisten, Kontext.\n"
         "  • Befunde: objektiv; Kurzstatus (AZ).\n"
-        "  • Beurteilung: Verdachtsdiagnose + 2–4 DD (kurz, plausibel).\n"
-        "  • Prozedere: kurze, klare Bulletpoints; nächste Schritte, Verlauf/Kontrolle, Vorzeitige Wiedervorstellung; Medikation nur allgemein, keine erfundenen Dosierungen.\n"
-        "- Schweizer Orthografie (ss statt ß), kein z.B., Natürlich/knapp.\n"
-        "- Antworte ausschließlich als JSON:\n\n"
+        "  • Beurteilung: Verdachtsdiagnose inkl. typischer Erreger/Mechanismus (falls passend) + 2–4 DD mit je 1–2 Stichworten Begründung.\n"
+        "  • Prozedere: kurze, klare Bulletpoints; nächste Schritte, Verlauf/Kontrolle, Vorzeitige Wiedervorstellung; Medikation nur allgemein (Substanzklasse/erstlinientaugliche Wirkstoffe), keine Dosierungen.\n"
+        "- Schweizer/Europäische Guidelines priorisieren (danach UK/US).\n"
+        "- Antworte ausschliesslich als JSON:\n\n"
         "{\n"
         "  \"anamnese_text\": \"string\",\n"
         "  \"befunde_text\": \"string\",\n"
@@ -157,15 +190,17 @@ def generate_full_entries_german(
     return result, full_block
 
 
-# ------------------ Schritt 1: Anamnese → Lückentext ------------------
+# -----------------------------------------------------------------------------
+# Schritt 1: Anamnese → Zusatzfragen (kurz)
+# -----------------------------------------------------------------------------
 
 def generate_anamnese_gaptext_german(
     anamnese_raw: str,
     answered_context: Optional[str] = "",
-    humanize: bool = True
+    humanize: bool = True,
 ) -> Tuple[Dict[str, Any], str]:
     """
-    Erzeugt 2–3 gezielte Zusatzfragen basierend auf dem Patiententext.
+    Erzeugt 2–5 gezielte Zusatzfragen basierend auf dem Patiententext.
     Return: (payload, fragen_text)
     payload: { "zusatzfragen": [..] }
     """
@@ -173,12 +208,15 @@ def generate_anamnese_gaptext_german(
     def _sys_msg_base(note: str) -> str:
         return (
             "Du bist ein erfahrener Hausarzt in der Schweiz.\n"
-            + note + "\n"
-            "Aufgabe: Analysiere den Freitext des Patienten und formuliere **2–5 gezielte, medizinisch relevante Zusatzfragen**, "
+            + EXTRA_DEPTH_NOTE
+            + "\n"
+            + note
+            + "\n"
+            "Aufgabe: Analysiere den Freitext des Patienten und formuliere 2–5 gezielte, medizinisch relevante Zusatzfragen, "
             "um die wahrscheinlichste Diagnose schnell einzugrenzen.\n"
             "Keine Untersuchungen nennen – nur Fragen.\n"
             "Fragen müssen kurz, klar und patientenverständlich formuliert sein.\n"
-            "Antwort ausschließlich als JSON im Format:\n"
+            "Antwort ausschliesslich als JSON im Format:\n"
             "{\n"
             "  \"zusatzfragen\": [\"Frage 1\", \"Frage 2\", \"Frage 3\", \"Frage 4\", \"Frage 5\"]\n"
             "}\n"
@@ -190,7 +228,7 @@ def generate_anamnese_gaptext_german(
     usr = {
         "eingabe_freitext": anamnese_raw,
         "bereits_beantwortet": answered_context or "",
-        "hinweise": "Keine Lückentexte, keine Listen mit Untersuchungen. Fokus nur auf Zusatzfragen."
+        "hinweise": "Keine Untersuchungen, nur Zusatzfragen."
     }
 
     result = _ask_openai_json(
@@ -209,10 +247,14 @@ def generate_anamnese_gaptext_german(
     return result, fragen_text or anamnese_raw
 
 
+# -----------------------------------------------------------------------------
+# Schritt 2: Befunde als Lückentext/Checkliste
+# -----------------------------------------------------------------------------
+
 def generate_befunde_gaptext_german(
     anamnese_filled: str,
     humanize: bool = True,
-    phase: str = "initial"  # "initial" oder "persistent"
+    phase: str = "initial",  # "initial" oder "persistent"
 ) -> Tuple[Dict[str, Any], str]:
     """
     Liefert praxisnahe Befunde als Lückentext/Checkliste zum direkten Ausfüllen
@@ -223,16 +265,19 @@ def generate_befunde_gaptext_german(
 
     sys_msg = (
         "Du bist ein erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
-        + note + "\n"
+        + EXTRA_DEPTH_NOTE
+        + "\n"
+        + note
+        + "\n"
         "Aufgabe: Erzeuge eine Liste praxisrelevanter körperlicher Untersuchungen, die in der Hausarztpraxis zu erheben sind und "
         "zur Anamnese passen. Keine Vitalparameter!\n"
         "WICHTIG:\n"
         "- KEIN fertiger Statusbericht / kein Fliesstext.\n"
-        "- Nur ausfüllbare Punkte mit Platzhaltern/Optionen, z. B.:\n"
+        "- Nur ausfüllbare Punkte mit Platzhaltern/Optionen.\n"
         "- Keine konkreten Messwerte eintragen, nur Struktur zum Ausfüllen.\n"
         "- Nichts doppeln, was in der Anamnese bereits beantwortet ist.\n"
         "- phase=\"initial\": nur Basics; phase=\"persistent\": am Ende eine Zusatzzeile mit 2–3 sinnvollen Erweiterungen.\n"
-        "Antwort ausschließlich als JSON:\n"
+        "Antwort ausschliesslich als JSON:\n"
         "{\n"
         "  \"befunde_lueckentext\": \"string\",\n"
         "  \"befunde_checkliste\": [\"string\", \"...\"]\n"
@@ -241,7 +286,7 @@ def generate_befunde_gaptext_german(
 
     usr = {
         "anamnese_abgeschlossen": anamnese_filled,
-        "phase": phase
+        "phase": phase,
     }
 
     result = _ask_openai_json(
@@ -255,41 +300,27 @@ def generate_befunde_gaptext_german(
     if isinstance(result, dict):
         bef_text = (result.get("befunde_lueckentext") or "").strip()
 
-    # Fallback, falls das Modell nichts liefert: generische, ausfüllbare Skeleton-Liste
+    # Fallback
     if not bef_text:
         lines = [
-            "- AZ: gut mittel reduziert",
-            "- keine weiteren Befunde",
+            "- AZ: gut / mittel / reduziert",
+            "- fokussierte Untersuchung: __",
         ]
         if phase == "persistent":
-            lines.append('Bei Persistenz/Progredienz: (Röntgen/US/erweitertes Labor) __')
+            lines.append("Bei Persistenz/Progredienz: (Röntgen/US/erweitertes Labor) __")
         bef_text = "\n".join(lines)
 
     return result, bef_text
 
 
-def on_gaptext(self):
-    raw = self.fields.get("Anamnese").get("1.0", tk.END).strip() if "Anamnese" in self.fields else ""
-    if not raw:
-        from tkinter import messagebox
-        messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese (frei) eingeben.")
-        return
-    try:
-        payload, gap = generate_anamnese_gaptext_german(raw)
-    except Exception as e:
-        from tkinter import messagebox
-        messagebox.showerror("Fehler", f"Lückentext fehlgeschlagen:\n{e}")
-        return
-    self.txt_gap.delete("1.0", tk.END)
-    self.txt_gap.insert(tk.END, gap)  # <— integrierter Lückentext, kein Fragenkatalog
-
-
-# ------------------ Schritt 2: Befunde (Basis / optional erweitert) ------------------
+# -----------------------------------------------------------------------------
+# Schritt 2b: Befunde – kurzer Freitext (für UI-Feld "Befunde")
+# -----------------------------------------------------------------------------
 
 def suggest_basic_exams_german(
     anamnese_filled: str,
     humanize: bool = True,
-    phase: str = "initial"  # "initial" oder "persistent"
+    phase: str = "initial",
 ) -> str:
     """
     Liefert ein fertiges Feld "Befunde" (kurze Sätze/Telegraphiestil).
@@ -299,39 +330,39 @@ def suggest_basic_exams_german(
 
     sys_msg = (
         "Du bist erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
-        + note + "\n"
+        + EXTRA_DEPTH_NOTE
+        + "\n"
+        + note
+        + "\n"
         "Nur Untersuchungen, die in der Grundversorgung rasch verfügbar sind. "
         "Kein Overkill; dedupliziere gegen bereits erhobene Angaben.\n"
+        "Vorgaben:\n"
+        "- Zuerst Kurzstatus: AZ .\n"
+        "- Dann fokussierte körperliche Untersuchung gemäss Leitsymptom.\n"
+        "- Optionale Basisgeraete/POCT: EKG, Lungenfunktion, Labor (nur 3–6 relevante Parameter), Schellong.\n"
+        "- Bei phase=\"persistent\": am Ende eine Zeile \"Bei Persistenz/Progredienz:\" mit 2–3 sinnvollen erweiterten Untersuchungen.\n"
+        "- Schweizer Standards.\n"
+        "Antwort: Gib nur das Feld \"Befunde\" als zusammenhängenden, praxisnahen Text (keine JSON).\n"
     ).strip()
 
     usr = {"anamnese_abgeschlossen": anamnese_filled, "phase": phase}
 
-    prompt = (
-        sys_msg
-        + "\n\nVorgaben:\n"
-        "- Zuerst Kurzstatus: AZ .\n"
-        "- Dann fokussierte körperliche Untersuchung gemäss Leitsymptom\n"
-        "- Optionale Basisgeraete/POCT: EKG, Lungenfunktion, Labor (3–6 relevante Parameter), Schellong.\n"
-        "- Bei phase=\"persistent\": am Ende eine Zeile \"Bei Persistenz/Progredienz:\" mit 2–3 sinnvollen erweiterten Untersuchungen.\n"
-        "- Keine Dopplungen zu bereits erwähnten/erhobenen Punkten.\n"
-        "- Schweizer Standards.\n\n"
-        "Antwort: Gib nur das Feld \"Befunde\" als zusammenhängenden, praxisnahen Text (keine JSON).\n"
-    )
-
-    return ask_openai(prompt + "\n\n" + json.dumps(usr, ensure_ascii=False))
+    return ask_openai(sys_msg + "\n\n" + json.dumps(usr, ensure_ascii=False))
 
 
-# ------------------ Schritt 3: Beurteilung + Prozedere ------------------
+# -----------------------------------------------------------------------------
+# Schritt 3: Beurteilung + Prozedere (tiefer, aber praxisnah)
+# -----------------------------------------------------------------------------
 
 def generate_assessment_and_plan_german(
     anamnese_final: str,
     befunde_final: str,
     humanize: bool = True,
-    phase: str = "initial"
+    phase: str = "initial",
 ) -> Tuple[str, str]:
     """
-    Erzeugt 'Beurteilung' (Arbeitsdiagnose + 2–3 DD) und 'Prozedere' (Praxisplan),
-    dedupliziert, knapp, natürlich, Schweiz-Style.
+    Erzeugt 'Beurteilung' (Arbeitsdiagnose + 2–3 DD mit Kurzbegründung inkl. Erreger/Mechanismus, wenn passend)
+    und 'Prozedere' (Praxisplan, substanzklassenbasiert, keine Dosierungen).
     """
     try:
         red_flags_data = load_red_flags(RED_FLAGS_PATH)
@@ -343,28 +374,34 @@ def generate_assessment_and_plan_german(
     note = _swiss_style_note(humanize)
 
     sys_part = (
-        "Du bist ein erfahrener Husarzt in einer Schweizer Hausarztpraxis.\n"
-        + note + "\n"
+        "Du bist ein erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
+        + EXTRA_DEPTH_NOTE
+        + "\n"
+        + note
+        + "\n"
         "Nur notwendige Infos; keine Wiederholungen von bereits Gesagtem. "
-        "Schweizer/Europäische Guidelines priorisieren (danach UK/US). "
-        "Kein ß, nur ss.\n"
+        "Schweizer/Europäische Guidelines priorisieren (danach UK/US). Kein ß, nur ss.\n"
     ).strip()
 
-    usr = {"anamnese": anamnese_final, "befunde": befunde_final, "phase": phase, "red_flags": red_flags_list}
+    usr = {
+        "anamnese": anamnese_final,
+        "befunde": befunde_final,
+        "phase": phase,
+        "red_flags": red_flags_list,
+    }
 
     prompt = (
         sys_part
         + "\n\nErzeuge zwei fertige Felder:\n\n"
         "Beurteilung:\n"
-        "- Verdachtsdiagnose (kurz, plausibel aus Anamnese/Befunden) mit kurzer Begründung.\n"
-        "- 2–3 DD (nur wenn klinisch sinnvoll), ohne Wiederholung von Befunden\n"
-        "- Falls Red Flags vorhanden: kurze Einordnung dort, sonst weglassen\n\n"
+        "- Verdachtsdiagnose mit kurzer Begründung (inkl. typischer wahrscheinlicher Erreger/Mechanismus, falls passend).\n"
+        "- 2–3 DD: jeweils mit 1–2 Stichworten zur Begründung (klinisch/epidemiologisch/pathophysiologisch).\n\n"
         "Prozedere:\n"
-        "- Unterpunkte, kein Fliesstext. Konkrete nächste Schritte in der Praxis (kurze, klare Bulletpoints)\n"
-        "- Vorzeitige Wiedervorstellung\n"
-        "- Verlauf/Kontrolle (realistisches Intervall)\n"
-        "- Medikamentöse Massnahmen nur allgemein (keine erfundenen Dosierungen)\n"
-        "- Bei \"persistent\": kurze Zeile zu weiterführender Abklärung/Überweisung\n\n"
+        "- Unterpunkte, kein Fliesstext. Konkrete nächste Schritte in der Praxis.\n"
+        "- Medikamentöse Massnahmen: Substanzklasse/erstlinientaugliche Wirkstoffe (keine Dosierungen, keine Markennamen).\n"
+        "- Vorzeitige Wiedervorstellung (Warnzeichen).\n"
+        "- Verlauf/Kontrolle (realistisches Intervall).\n"
+        "- Bei \"persistent\": kurze Zeile zu weiterführender Abklärung/Überweisung.\n\n"
         "Antwort: gib zuerst Beurteilung, dann eine Leerzeile, dann Prozedere.\n"
     )
 
@@ -378,7 +415,73 @@ def generate_assessment_and_plan_german(
     return beurteilung, prozedere
 
 
-# ------------------ Ältere/zusätzliche Generatoren (optional nutzbar) ------------------
+# -----------------------------------------------------------------------------
+# Zusatz: Vignetten/MCQ-Analysator (direkte Antwort + Therapie)
+# -----------------------------------------------------------------------------
+
+def analyze_vignette_and_treatment(vignette_text: str) -> Dict[str, Any]:
+    """
+    Analysiert klinische Vignetten (inkl. MCQ/USMLE-ähnliche Texte) und liefert direkt die
+    wahrscheinlichste Ursache/Diagnose sowie eine praxisrelevante Therapieempfehlung (ohne Dosierungen).
+
+    Rückgabe-JSON (Beispiel):
+    {
+      "antwort_kurz": "Chlamydia psittaci (Psittakose, atypische Pneumonie) – erstlinientauglich: Doxycyclin (Tetrazykline)",
+      "diagnose": "Atypische Pneumonie durch Chlamydia psittaci (Psittakose)",
+      "wahrscheinlichster_erreger": "Chlamydia psittaci",
+      "begruendung": "Vogelkontakt (Sittiche), Fieber, trockener Husten, LLL-Infiltrat, normale Na+, negative Influenza/SARS-CoV-2",
+      "therapie_empfehlung": "Klasse: Tetrazykline; Wirkstoff: Doxycyclin (ohne Dosierung)",
+      "leitlinienhinweis": "Empirische Erstlinientherapie gemäss CH/EU-Empfehlungen; stationäre Kriterien prüfen bei Hypoxie/Instabilität"
+    }
+    """
+    sys_msg = (
+        "Du bist ein erfahrener Hausarzt in der Schweiz mit Zugriff auf Spezialwissen (Infektiologie, Innere Medizin).\n"
+        + EXTRA_DEPTH_NOTE
+        + "\n"
+        "Aufgabe: Analysiere die klinische Vignette und gib die wahrscheinlichste Ursache/Diagnose und eine geeignete, "
+        "praxisrelevante Therapieempfehlung zurück. Antworte nicht als Frage, sondern als direkte Einschätzung. "
+        "Keine Dosierungen, keine Markennamen. Schweizer/Europäische Guidelines priorisieren.\n"
+        "Antworte ausschliesslich als JSON mit folgenden Feldern:\n"
+        "{\n"
+        "  \"antwort_kurz\": \"string\",\n"
+        "  \"diagnose\": \"string\",\n"
+        "  \"wahrscheinlichster_erreger\": \"string\",\n"
+        "  \"begruendung\": \"string\",\n"
+        "  \"therapie_empfehlung\": \"string\",\n"
+        "  \"leitlinienhinweis\": \"string\"\n"
+        "}\n"
+    ).strip()
+
+    usr = {
+        "vignette": vignette_text,
+        "hinweise": "Falls MCQ-Optionen vorhanden sind: ignoriere Buchstaben A–D und gib die beste Lösung direkt aus."
+    }
+
+    result = _ask_openai_json(
+        messages=[
+            {"role": "system", "content": sys_msg},
+            {"role": "user", "content": json.dumps(usr, ensure_ascii=False)},
+        ]
+    )
+
+    # Minimaler Sanity-Check
+    required = [
+        "antwort_kurz",
+        "diagnose",
+        "wahrscheinlichster_erreger",
+        "begruendung",
+        "therapie_empfehlung",
+        "leitlinienhinweis",
+    ]
+    for k in required:
+        result.setdefault(k, "noch ausstehend")
+
+    return result
+
+
+# -----------------------------------------------------------------------------
+# Ältere/zusätzliche Generatoren (weiter nutzbar)
+# -----------------------------------------------------------------------------
 
 def generate_follow_up_questions(anamnese: str) -> str:
     prompt = (
@@ -473,10 +576,36 @@ def generate_procedure(beurteilung: str, befunde: str, anamnese: str) -> str:
         + "\n\nBefunde:\n"
         + befunde
         + "\n\nListe stichpunktartig ein empfohlenes Prozedere auf:\n"
-        "- Abgemachte Massnahmen (inkl. Medikation, ohne erfundene Dosierungen)\n"
+        "- Abgemachte Massnahmen (inkl. Medikation als Substanzklasse/erstlinientaugliche Wirkstoffe; keine Dosierungen)\n"
         "- Verlauf/Kontrollintervall\n"
         "- Vorzeitige Wiedervorstellung (konkrete Warnzeichen)\n"
         "- Weitere Abklärungen bei Ausbleiben der Besserung\n"
     )
     procedure = ask_openai(prompt)
     return red_flag_note + procedure
+
+
+# -----------------------------------------------------------------------------
+# UI-Helfer (nur verwendet, wenn dieses Modul direkt importiert wird)
+# -----------------------------------------------------------------------------
+
+class _UiStubs:
+    """Nur Typhinweise für UI-Integration (tkinter-Callbacks)."""
+    fields: Dict[str, tk.Text]
+    txt_gap: tk.Text
+
+
+__all__ = [
+    "generate_full_entries_german",
+    "generate_anamnese_gaptext_german",
+    "generate_befunde_gaptext_german",
+    "suggest_basic_exams_german",
+    "generate_assessment_and_plan_german",
+    "generate_follow_up_questions",
+    "generate_relevant_findings",
+    "generate_differential_diagnoses",
+    "generate_assessment_from_differential",
+    "generate_assessment",
+    "generate_procedure",
+    "analyze_vignette_and_treatment",
+]
