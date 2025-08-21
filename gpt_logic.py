@@ -8,6 +8,7 @@
 # seit gestern juckender ausschlag an beiden armen, nach gartenarbeit aufgetreten, keine atemnot, kein fieber.
 
 import os
+import re
 import json
 import tkinter as tk
 from tkinter import scrolledtext, messagebox
@@ -36,6 +37,47 @@ PROMPT_PREFIX = (
     "Schweizer Orthografie (ss statt ß)."
 )
 
+_LAB_KWS = ["labor", "blutbild", "bb", "crp", "leuko", "lc", "elektrolyt", "natrium", "kalium",
+            "bz", "blutzucker", "kreatinin", "gfr", "leberwerte", "urin", "urin-stix", "stix"]
+_IMG_KWS = ["ultraschall", "sono", "us ", " ct", "ct ", "mrt", "rx", "röntgen", "roentgen", "bildgebung"]
+
+def _contains_any(s: str, kws: list[str]) -> bool:
+    s = s.lower()
+    return any(k in s for k in kws)
+
+def _dedupe_diagnostics_in_plan(befunde_text: str, plan_text: str) -> str:
+    """Entfernt Labor/Bildgebung aus dem Plan, wenn diese bereits in 'Befunde' stehen.
+       Bildgebung/Labor bleibt nur in der '- Bei Persistenz/Progredienz:'-Zeile erlaubt."""
+    if not plan_text:
+        return plan_text or ""
+    bef = (befunde_text or "").lower()
+    labs_in_bef = _contains_any(bef, _LAB_KWS)
+    img_in_bef  = _contains_any(bef, _IMG_KWS)
+
+    lines = re.split(r"\r?\n", plan_text)
+    kept: list[str] = []
+    for ln in lines:
+        raw = ln.strip()
+        lower = raw.lower().lstrip("-• ").strip()
+        if lower.startswith("bei persist"):
+            kept.append(ln)  # immer behalten
+            continue
+        if labs_in_bef and _contains_any(lower, _LAB_KWS):
+            continue
+        if img_in_bef and _contains_any(lower, _IMG_KWS):
+            continue
+        kept.append(ln)
+    return "\n".join(kept).strip()
+
+def _ensure_persistence_line(plan_text: str, default_hint: str = "") -> str:
+    """Sichert, dass genau eine Persistenz-Zeile vorhanden ist; falls nicht, fügt eine generische an."""
+    if not plan_text:
+        plan_text = ""
+    if re.search(r"(?im)^\s*[-•]?\s*bei\s+persist", plan_text):
+        return plan_text.strip()
+    hint = default_hint or "Bei Persistenz/Progredienz: weiterführende Diagnostik (Bildgebung oder erweitertes Labor) erwägen."
+    sep = "\n" if not plan_text.endswith("\n") else ""
+    return (plan_text.strip() + sep + hint).strip()
 
 # ------------------ Low-level Helpers ------------------
 
@@ -135,22 +177,449 @@ def _compose_context_for_assessment(
 
     return "\n\n".join(parts)
 
+def _normalize_plan_bullets(text: str) -> str:
+    """
+    Vereinheitlicht den Plan:
+    - trennt Inline-Bullets (•/–/—/-) in eigene Zeilen
+    - entfernt führende Bullet-Zeichen / Whitespaces je Zeile
+    - setzt pro Zeile genau ein "- "
+    """
+    if not text:
+        return "- keine Angaben"
+
+    t = text.strip()
+
+    # 1) Inline-Separators in Zeilenumbrüche umwandeln
+    #    " • " / "•" / " – " / " — " / " - "  →  "\n"
+    t = re.sub(r"[ \t]*[•\u2022][ \t]*", "\n", t)
+    t = re.sub(r"\s[–—-]\s+", "\n", t)  # Gedankenstrich/Minus zwischen Wörtern
+
+    # 2) Auf Zeilen aufteilen, leere entfernen
+    lines = [ln.strip() for ln in t.splitlines()]
+    lines = [ln for ln in lines if ln]
+
+    # 3) Führende Bulletzeichen je Zeile entfernen und normieren
+    norm: list[str] = []
+    for ln in lines:
+        # Leitet gelegentlich mit Bullet/Listenzeichen ein
+        ln = re.sub(r"^[\-\u2022•\*\u2013\u2014]+\s*", "", ln)
+        if not ln:
+            continue
+        norm.append(f"- {ln}")
+
+    return "\n".join(norm) if norm else "- keine Angaben"
+
+def _parse_ottawa_from_text(befunde_text: str) -> dict:
+    """
+    Grobheuristik für Ottawa‑Ankle‑Rules anhand frei editierten Befundtextes.
+    Wir suchen nach Hinweisen auf:
+      - Knochen‑Druckschmerz Malleolus (lat/med)
+      - Basis MT5
+      - Os naviculare
+      - 4 Schritte möglich / nicht möglich
+      - Rx durchgeführt / Fraktur festgestellt
+    """
+    t = (befunde_text or "").lower()
+
+    def has_any(*words: str) -> bool:
+        return any(w in t for w in words)
+
+    malleolus_pain = has_any("druckdolenz malleolus", "schmerz malleolus", "malleolus lat", "malleolus med")
+    mt5_pain      = has_any("basis os metatarsale v", "basis mt5", "mt5 schmerz", "druckdolenz mt5")
+    nav_pain      = has_any("os naviculare", "naviculare schmerz", "naviculare druckdolenz")
+    no_4_steps    = has_any("4 schritte nicht", "keine 4 schritte", "gehunfähig", "nicht belastbar", "keine belastung")
+    can_4_steps   = has_any("4 schritte möglich", "belastbar", "gehen möglich")
+
+    rx_done       = has_any("rx", "röntgen", "roentgen")
+    fracture      = has_any("fraktur", "frakturlinie", "bruch")
+    no_fracture   = has_any("keine fraktur", "ohne fraktur", "fraktur ausgeschlossen")
+
+    # Ottawa positiv, wenn (Knochendruckschmerz an den 3 Arealen) ODER Unfähigkeit zu 4 Schritten
+    ottawa_positive = (malleolus_pain or mt5_pain or nav_pain) or no_4_steps
+    ottawa_negative = can_4_steps and not (malleolus_pain or mt5_pain or nav_pain)
+
+    return {
+        "ottawa_positive": bool(ottawa_positive) and not ottawa_negative,
+        "ottawa_negative": bool(ottawa_negative),
+        "rx_done": bool(rx_done),
+        "fracture": bool(fracture) and not no_fracture,
+        "no_fracture": bool(no_fracture),
+    }
+
+def _guess_focus_simple(text: str) -> str:
+    """
+    Sehr schlanke Leitsymptom-Heuristik (nur lokal in gpt_logic.py),
+    damit wir keine Abhängigkeit zur UI-Datei haben.
+    """
+    t = (text or "").lower()
+
+    # Muskuloskelettal
+    if any(k in t for k in ("sprunggelenk", "osg", "fuss", "fuß", "fussgelenk", "fußgelenk", "umknick", "umgeknickt", "achill")):
+        return "msk_ankle"
+    if any(k in t for k in ("hand", "handgelenk", "wrist", "karpal", "karpaltunnel", "skaphoid", "tabatiere")):
+        return "msk_wrist"
+
+    # Wirbelsäule / Rücken
+    if any(k in t for k in ("rücken", "ruecken", "lumb", "lws", "ischias")):
+        return "lws"
+
+    # Innere
+    if any(k in t for k in ("brust", "thorax", "atemnot", "brustschmerz")):
+        return "thorax"
+    if any(k in t for k in ("bauch", "abdomen", "übelkeit", "erbrechen", "durchfall")):
+        return "abdomen"
+    if any(k in t for k in ("hals", "husten", "halsweh", "halsschmerz", "schnupfen")):
+        return "hno"
+    if any(k in t for k in ("kopfschmerz", "schwindel", "synkope")):
+        return "neuro"
+
+    return "allg"
+
+
+def _guess_focus_from_all(anamnese_text: str, befunde_text: str) -> str:
+    """
+    Re-Use: kombiniere Anamnese + Befunde als Signal und wähle Fokus.
+    """
+    txt = (anamnese_text or "") + " " + (befunde_text or "")
+    # harte Keys zuerst (überschreiben einfache Matches)
+    t = txt.lower()
+    if any(k in t for k in ("sprunggelenk", "osg", "fuss", "fuß", "umknick", "umgeknickt", "achill")):
+        return "msk_ankle"
+    if any(k in t for k in ("hand", "handgelenk", "wrist", "karpal", "skaphoid", "tabatiere")):
+        return "msk_wrist"
+    # sonst einfache Heuristik
+    return _guess_focus_simple(txt)
+
+
+def pre_assessment_gate(anamnese_text: str, befunde_text: str) -> Optional[dict]:
+    """
+    Prüft scorebasierte Gates (derzeit: Ottawa Ankle).
+    Falls Ottawa positiv und kein Rx‑Resultat vorhanden → blockiert finale LLM‑Beurteilung
+    und liefert einen Interims‑Plan.
+    Rückgabe None = kein Block; sonst Dict mit 'assessment' und 'plan'.
+    """
+    focus = _guess_focus_from_all(anamnese_text, befunde_text)
+    if focus != "msk_ankle":
+        return None
+
+    o = _parse_ottawa_from_text(befunde_text)
+    if not o.get("ottawa_positive"):
+        return None  # kein Block nötig
+
+    # Wenn positiv aber Rx/Befund fehlt → Interimsplan ausgeben
+    if not o.get("rx_done") or (not o.get("fracture") and not o.get("no_fracture")):
+        assessment = "OSG‑Distorsion (Verdacht). Ottawa‑Ankle‑Rules positiv – Fraktur bis Rx‑Befund nicht ausgeschlossen."
+        plan = "\n".join([
+            "- Schonung, Kühlung, Hochlagern, Kompression (RICE).",
+            "- Analgetika bei Bedarf (allgemein).",
+            "- Röntgen OSG/Fuss gemäss Ottawa‑Regeln veranlasst.",
+            "- Verlaufskontrolle in 24–48 h oder nach Vorliegen Rx‑Befund.",
+            "- Vorzeitige Wiedervorstellung bei zunehmendem Schmerz/Schwellung, Gefühlsstörungen oder Durchblutungsstörung.",
+            "Bei Persistenz/Progredienz: weiterführende Bildgebung (US/MRI) oder Ortho‑Beurteilung erwägen."
+        ])
+        return {"block": True, "assessment": assessment, "plan": plan}
+
+    # Wenn Rx bereits vorhanden → kurze Bewertung je nach Frakturstatus vorschlagen
+    if o.get("fracture"):
+        assessment = "OSG‑Trauma mit nachgewiesener Fraktur (Rx)."
+        plan = "\n".join([
+            "- Immobilisation/Entlastung (z. B. Vacoped/Schiene) – nach lokaler Praxis.",
+            "- Analgetika (allgemein).",
+            "- Ortho/Unfallchirurgie zur weiteren Behandlung.",
+            "- Verlaufskontrolle/Termin gemäss Fachdisziplin.",
+            "Bei Persistenz/Progredienz: zusätzliche Bildgebung/MRI nach Fachentscheid."
+        ])
+        return {"block": True, "assessment": assessment, "plan": plan}
+
+    if o.get("no_fracture"):
+        # Ottawa positiv, Rx ohne Fraktur → Distorsionsmanagement
+        assessment = "OSG‑Distorsion ohne Fraktur (Rx)."
+        plan = "\n".join([
+            "- RICE: Schonung, Kühlung, Kompression, Hochlagern.",
+            "- Frühfunktionelle Mobilisation/Physio nach Schmerz.",
+            "- Analgetika bei Bedarf (allgemein).",
+            "- Verlaufskontrolle in 5–7 Tagen.",
+            "- Vorzeitige Wiedervorstellung bei Zunahme der Beschwerden oder Neurologiezeichen.",
+            "Bei Persistenz/Progredienz: US/MRI; Ortho/Physio erwägen."
+        ])
+        return {"block": True, "assessment": assessment, "plan": plan}
+
+    return None
+
+def discover_relevant_scores(anamnese_raw: str, befunde_text: str = "", model: str = MODEL_DEFAULT) -> Dict[str, Any]:
+    """
+    Lässt das LLM max. 2 klinische Scores/Decision-Tools vorschlagen,
+    die zur aktuellen Anamnese/Befunde passen (Hausarzt, Schweiz/Europa).
+    Rückgabeformat ist strikt und UI-freundlich.
+
+    JSON-Schema:
+    {
+      "scores": [
+        {
+          "name": "Ottawa Ankle Rules",
+          "version": "canonical/aktuell",
+          "applicable": true,
+          "why": "kurze Begründung",
+          "items": [
+            {"key":"malleolus_tenderness","label":"Knochendruckschmerz Malleolus (lat/med)","collect_in":"befunde"},
+            {"key":"mt5_tenderness","label":"Knochendruckschmerz Basis MT5","collect_in":"befunde"},
+            {"key":"navicular_tenderness","label":"Knochendruckschmerz Os naviculare","collect_in":"befunde"},
+            {"key":"unable_4_steps","label":"4 Schritte nicht möglich","collect_in":"befunde"},
+            {"key":"xray_done","label":"Röntgen durchgeführt","collect_in":"bildgebung"},
+            {"key":"fracture_on_xray","label":"Fraktur im Röntgen","collect_in":"bildgebung"}
+          ],
+          "gate": {
+            "positive_when": "kurze Logik in Worten",
+            "action_if_positive": "Röntgen OSG/Fuss",
+            "action_if_incomplete": "fehlende Items gezielt erheben",
+            "action_if_negative": "kein Rx erforderlich"
+          }
+        }
+      ]
+    }
+    """
+    allowed = [
+        "Ottawa Ankle Rules", "Revised Geneva Score", "Wells DVT", "Centor/McIsaac",
+        "CURB-65", "PERC", "Ottawa Knee", "Canadian C-Spine", "qSOFA", "CHA2DS2-VASc"
+    ]
+    sys_msg = (
+        "Du bist erfahrener Hausarzt in der Schweiz. Wähle höchstens ZWEI klinische Scores/Decision-Tools, "
+        "die für die geschilderte Situation in der Grundversorgung relevant sind. "
+        "NUTZE NUR die folgende Whitelist (keine neuen Scores erfinden): "
+        + ", ".join(allowed) + ". "
+        "Fokussiere auf Werkzeuge, die die nächste diagnostische/therapeutische Entscheidung beeinflussen "
+        "(z. B. Bildgebung/POCT). "
+        "Ordne JEDE Erhebungs-Variable eindeutig einer Kategorie zu: 'anamnese' | 'befunde' | 'labor' | 'bildgebung'. "
+        "Schweizer/Europäische Praxis. Antworte NUR als gültiges JSON nach dem angegebenen Schema."
+    )
+    ctx = {
+        "anamnese": (anamnese_raw or "").strip(),
+        "befunde": (befunde_text or "").strip(),
+        "schema": "scores[*].{name,version,applicable,why,items[*]{key,label,collect_in},gate{positive_when,action_if_positive,action_if_incomplete,action_if_negative}}"
+    }
+    try:
+        out = _ask_openai_json(
+            messages=[
+                {"role": "system", "content": sys_msg},
+                {"role": "user", "content": json.dumps(ctx, ensure_ascii=False)},
+            ],
+            model=model, temperature=0.2
+        )
+    except Exception as e:
+        logging.exception("discover_relevant_scores failed: %s", e)
+        out = {}
+    # Schema absichern
+    scores = out.get("scores") if isinstance(out, dict) else None
+    if not isinstance(scores, list):
+        scores = []
+    # nur 2 behalten, Felder hart validieren
+    def _clean_item(it: Dict[str, Any]) -> Dict[str, str]:
+        return {
+            "key": str(it.get("key", "")).strip(),
+            "label": str(it.get("label", "")).strip(),
+            "collect_in": str(it.get("collect_in", "")).strip().lower(),
+        }
+    cleaned = []
+    for sc in scores[:2]:
+        cleaned.append({
+            "name": str(sc.get("name","")).strip(),
+            "version": str(sc.get("version","")).strip() or "canonical",
+            "applicable": bool(sc.get("applicable", True)),
+            "why": str(sc.get("why","")).strip(),
+            "items": [_clean_item(i) for i in (sc.get("items") or []) if i],
+            "gate": {
+                "positive_when": str((sc.get("gate") or {}).get("positive_when","")).strip(),
+                "action_if_positive": str((sc.get("gate") or {}).get("action_if_positive","")).strip(),
+                "action_if_incomplete": str((sc.get("gate") or {}).get("action_if_incomplete","")).strip(),
+                "action_if_negative": str((sc.get("gate") or {}).get("action_if_negative","")).strip(),
+            }
+        })
+    return {"scores": cleaned}
+
+# ---------- Score-Auswertung: Ottawa Ankle + Revised Geneva ----------
+
+def _normalize_ottawa_criteria(raw: dict) -> dict:
+    """
+    Vereinheitlicht diverse Key-Varianten (Englisch/Deutsch/LLM) auf:
+      malleolus, mt5, nav, no4steps, rx_done, fracture, no_fracture
+    Erkennt sowohl englische als auch deutsche Synonyme.
+    """
+    raw = {str(k).lower(): bool(v) for k, v in (raw or {}).items()}
+
+    def present(patterns: list[str]) -> bool:
+        # True, wenn irgendein gesetzter Key eines der Muster enthält
+        for k, v in raw.items():
+            if not v:
+                continue
+            for p in patterns:
+                if p in k:
+                    return True
+        return False
+
+    return {
+        # Knochen-Druckschmerz Malleolus (lat/med)
+        "malleolus": (
+            raw.get("malleolus", False)
+            or present(["malleol", "malleolus", "knöchel", "knoechel"])
+        ),
+        # Basis des 5. Metatarsale
+        "mt5": (
+            raw.get("mt5", False)
+            or present(["mt5", "metatars", "mittelfuss", "mittelfuß", "5.", "fuenf", "fünft"])
+        ),
+        # Os naviculare (Kahnbein)
+        "nav": (
+            raw.get("nav", False)
+            or present(["navicul", "kahnbein", "os nav"])
+        ),
+        # 4 Schritte nicht möglich / nicht belastbar
+        "no4steps": (
+            raw.get("no4steps", False)
+            or present([
+                "unable_4", "4 step", "4 schritt", "no4",
+                "keine 4", "nicht belast", "unfaehig", "unfähig",
+                "bear_weight", "weight", "gehen nicht", "gehunf"
+            ])
+        ),
+        # Bildgebung/Resultat
+        "rx_done":     raw.get("rx_done", False)     or present(["xray", "röntgen", "roentgen", "rx"]),
+        "fracture":    raw.get("fracture", False)    or present(["fracture_on_xray", "fraktur", "bruch"]),
+        "no_fracture": raw.get("no_fracture", False) or present(["no_fracture", "keine fraktur", "ohne fraktur", "negativ"]),
+    }
+
+
+def ottawa_recommendation(criteria: dict) -> dict:
+    """
+    Erwartet beliebige Key-Varianten (Englisch/Deutsch/LLM); wird intern normalisiert.
+    Rückgabe: {"block": bool, "assessment": str, "plan": str, "summary": str}
+    """
+    c = _normalize_ottawa_criteria(criteria or {})  # ⬅️ wichtig!
+    positive = any((c["malleolus"], c["mt5"], c["nav"], c["no4steps"]))
+
+    if not positive:
+        return {"block": False, "summary": "Ottawa negativ – Rx nicht zwingend."}
+
+    # Rx indiziert, aber (noch) kein valider Befund → Interims-Plan + Block
+    if not c["rx_done"] or (not c["fracture"] and not c["no_fracture"]):
+        assess = "OSG-Distorsion (Verdacht). Ottawa-Ankle-Rules positiv – Fraktur bis Rx-Befund nicht ausgeschlossen."
+        plan = "\n".join([
+            "- Schonung, Kühlung, Hochlagern, Kompression (RICE).",
+            "- Analgetika bei Bedarf (allgemein).",
+            "- Röntgen OSG/Fuss gemäss Ottawa-Regeln veranlasst.",
+            "- Verlaufskontrolle in 24–48 h oder nach Vorliegen Rx-Befund.",
+            "- Vorzeitige Wiedervorstellung bei zunehmenden Schmerzen/Schwellung, Neurologie- oder Durchblutungsstörung.",
+            "Bei Persistenz/Progredienz: weiterführende Bildgebung (US/MRI) oder Ortho-Beurteilung erwägen."
+        ])
+        return {"block": True, "assessment": assess, "plan": plan,
+                "summary": "Ottawa positiv – Rx indiziert (ausstehend)."}
+
+    # Rx vorhanden → je nach Befund
+    if c["fracture"]:
+        assess = "OSG-Trauma mit nachgewiesener Fraktur (Rx)."
+        plan = "\n".join([
+            "- Immobilisation/Entlastung (z. B. Schiene/Vacoped).",
+            "- Analgetika (allgemein).",
+            "- Ortho/Unfallchirurgie zur Weiterbehandlung.",
+            "- Verlauf gemäss Fachdisziplin.",
+            "Bei Persistenz/Progredienz: zusätzliche Bildgebung nach Fachentscheid."
+        ])
+        return {"block": True, "assessment": assess, "plan": plan,
+                "summary": "Fraktur nachgewiesen – Fachdisziplin."}
+
+    if c["no_fracture"]:
+        assess = "OSG-Distorsion ohne Fraktur (Rx)."
+        plan = "\n".join([
+            "- RICE: Schonung, Kühlung, Kompression, Hochlagern.",
+            "- Frühfunktionelle Mobilisation/Physio nach Schmerz.",
+            "- Analgetika bei Bedarf (allgemein).",
+            "- Verlaufskontrolle in 5–7 Tagen.",
+            "- Vorzeitige Wiedervorstellung bei Zunahme der Beschwerden oder Neurologiezeichen.",
+            "Bei Persistenz/Progredienz: US/MRI; Ortho/Physio erwägen."
+        ])
+        return {"block": True, "assessment": assess, "plan": plan,
+                "summary": "Ottawa positiv, Rx ohne Fraktur – Distorsionsmanagement."}
+
+    return {"block": False, "summary": "Ottawa positiv – Status unklar (Angaben unvollständig)."}
+
+# Revised Geneva – einfache Punktewertung (Skeleton, CH/Europa üblich)
+GENEVA_WEIGHTS = {
+    "age_65_plus": 1,
+    "prev_dvt_pe": 3,
+    "surgery_fracture_1m": 2,
+    "active_cancer": 2,
+    "unilateral_leg_pain": 3,
+    "hemoptysis": 2,
+    "hr_75_94": 3,
+    "hr_95_plus": 5,
+    "pain_on_deep_vein_palp_and_unilateral_edema": 4,
+}
+GENEVA_CATEGORIES = [
+    ("low", 0, 3),
+    ("intermediate", 4, 10),
+    ("high", 11, 1000),
+]
+
+def _geneva_points(criteria: dict) -> tuple[int, str]:
+    s = 0
+    for k, w in GENEVA_WEIGHTS.items():
+        if criteria.get(k):
+            s += w
+    cat = "low"
+    for name, lo, hi in GENEVA_CATEGORIES:
+        if lo <= s <= hi:
+            cat = name; break
+    return s, cat
+
+def geneva_recommendation(criteria: dict) -> dict:
+    """
+    Erwartet Keys laut GENEVA_WEIGHTS (bool). Rückgabe: {"block": False, "summary": "..."}.
+    """
+    pts, cat = _geneva_points(criteria or {})
+    if cat == "high":
+        rec = "Hohe klinische Wahrscheinlichkeit – CTPA (CT Thorax mit KM) erwägen; D-Dimer nicht notwendig."
+    elif cat == "intermediate":
+        rec = "Intermediäre Wahrscheinlichkeit – D-Dimer testen; bei positivem D-Dimer CTPA."
+    else:
+        rec = "Niedrige Wahrscheinlichkeit – primär D-Dimer; nur bei positivem Test Bildgebung."
+    return {"block": False, "summary": f"Revised Geneva: {pts} Punkte ({cat}). {rec}"}
+
+
+
 # ------------------ 4 Felder – fix & fertig ------------------
 
 def _format_full_entries_block(payload: Dict[str, Any]) -> str:
     """Kopierfertiger Block mit allen vier Feldern (Red Flags separat im UI)."""
-    parts = []
+
+    def _normalize_bullets(text: str) -> str:
+        lines = (text or "").splitlines()
+        norm = []
+        for ln in lines:
+            s = ln.strip()
+            if not s:
+                continue
+            # vorhandene Bulletzeichen entfernen und genau ein "- " setzen
+            s = s.lstrip("-• ").strip()
+            norm.append(f"- {s}")
+        return "\n".join(norm) if norm else "- keine Angaben"
+
+    ana = (payload.get("anamnese_text") or "keine Angaben").strip()
+    bef = (payload.get("befunde_text") or "keine Angaben").strip()
+    beu = (payload.get("beurteilung_text") or "keine Angaben").strip()
+    proz_raw = (payload.get("prozedere_text") or "keine Angaben").strip()
+    proz = _normalize_bullets(proz_raw)
+
+    parts: list[str] = []
     parts.append("Anamnese:")
-    parts.append((payload.get("anamnese_text") or "keine Angaben").strip())
+    parts.append(ana)
     parts.append("")
     parts.append("Befunde:")
-    parts.append((payload.get("befunde_text") or "keine Angaben").strip())
+    parts.append(bef)
     parts.append("")
     parts.append("Beurteilung:")
-    parts.append((payload.get("beurteilung_text") or "keine Angaben").strip())
+    parts.append(beu)
     parts.append("")
     parts.append("Prozedere:")
-    parts.append((payload.get("prozedere_text") or "keine Angaben").strip())
+    parts.append(proz)
     return "\n".join(parts).strip()
 
 
@@ -183,7 +652,7 @@ def generate_full_entries_german(
         "  • Anamnese: kurz/telegraphisch; Dauer, Lokalisation/Qualität, relevante zu erfragende Begleitsymptome auflisten, relevante zu erfragende Vorerkrankungen/Medikation auflisten, Kontext.\n"
         "  • Befunde: objektiv; Kurzstatus (AZ).\n"
         "  • Beurteilung: Verdachtsdiagnose + 2–4 DD (kurz, plausibel).\n"
-        "  • Prozedere: kurze, klare Bulletpoints; nächste Schritte, Verlauf/Kontrolle, Vorzeitige Wiedervorstellung; Medikation nur allgemein, keine erfundenen Dosierungen.\n"
+        "  • Prozedere: kurz/telegraphisch, klare Bulletpoints pro Zeile; nächste Schritte, Verlauf/Kontrolle, Vorzeitige Wiedervorstellung; Medikation nur allgemein, keine erfundenen Dosierungen.\n"
         "- Schweizer Orthografie (ss statt ß), kein z.B., Natürlich/knapp.\n"
         "- Antworte ausschließlich als JSON:\n\n"
         "{\n"
@@ -299,7 +768,7 @@ def generate_befunde_gaptext_german(
         "Du bist ein erfahrener Hausarzt (Schweiz). "
         "Erzeuge praxisnahe, rasch verfügbare Untersuchungen/Befunde als Lückentext + Checkliste. "
         "Keine Vitalparameter. Keine Dopplungen zur Anamnese. "
-        f"Phase='{phase}'. Wenn phase='persistent': am Ende 2–3 sinnvolle Erweiterungen beginnen mit 'Bei Persistenz/Progredienz: …'. "
+        f"Phase='{phase}'. Wenn phase='persistent': am Ende 2–3 sinnvolle Erweiterungen beginnen mit '- Bei Persistenz/Progredienz: …'. "
         "Antworte NUR als JSON mit Feldern 'befunde_lueckentext' und 'befunde_checkliste'."
     )
     usr = {"kontext": context, "phase": phase}
@@ -373,7 +842,7 @@ def suggest_basic_exams_german(
     vorgaben = (
         "Vorgaben:\n"
         "- Zuerst Kurzstatus: AZ (kurz, objektiv).\n"
-        "- Danach fokussierte körperliche Untersuchung gemäss Leitsymptom.\n"
+        "- Danach fokussierte körperliche Untersuchungen, gemäss Leitsymptom.\n"
         "- Optional Basisgeräte/POCT, wenn sinnvoll: EKG, Lungenfunktion, Labor (3–6 relevante Parameter), Schellong.\n"
         "- Bei phase=\"persistent\": am Ende genau eine Zeile beginnen mit "
         "\"Bei Persistenz/Progredienz:\" und 2–3 sinnvolle weiterführende Untersuchungen.\n"
@@ -412,9 +881,9 @@ def generate_assessment_and_plan_german(
     """
     Erzeugt:
       - beurteilung_text: Verdachtsdiagnose + 2–4 DDs, jeweils kurz begründet.
-      - prozedere_text: Bulletpoints (nächste Schritte in der Grundversorgung, Verlauf/Kontrolle,
+      - prozedere_text: ein Bulletpoint pro Zeile (nächste Schritte in der Grundversorgung, Verlauf/Kontrolle,
                         vorzeitige Wiedervorstellung (allgemein, ohne Red-Flag-Listen), Medikation nur allgemein).
-        Abschlusszeile: "Bei Persistenz/Progredienz: …".
+        Abschlusszeile: "- Bei Persistenz/Progredienz: …".
 
     Nutzt kombinierte Informationen aus Anamnese, (beantworteten) Zusatzfragen und erhobenen Befunden.
     """
@@ -435,13 +904,15 @@ def generate_assessment_and_plan_german(
 
     richtlinien = (
         "Richtlinien:\n"
-        "- Beurteilung: Verdachtsdiagnose zuerst; 2–4 relevante Differenzialdiagnosen, je 1 kurze Begründung "
-        "(ohne Wiederholung langer Befunde; keine Vitalparameter; keine Dosierungen).\n"
-        "- Prozedere: Bulletpoints; nächste Schritte (ausschliesslich rasch verfügbare Untersuchungen/POCT), "
-        "Verlauf/Kontrolle, vorzeitige Wiedervorstellung bei Warnzeichen (allgemein formuliert, "
-        "keine konkrete Red-Flag-Liste), Medikation nur allgemein. "
-        "Am Ende genau eine Zeile mit \"Bei Persistenz/Progredienz:\" und 1–2 sinnvollen Abklärungen/Überweisungen.\n"
-        "- Schweizer Standards. Keine Red Flags im Text aufzählen."
+        "- Beurteilung: Verdachtsdiagnose zuerst; 2–4 relevante Differenzialdiagnosen, je 1 kurze Begründung.\n"
+        "- Prozedere (Hausarzt, ambulant):\n"
+        "  • Zuerst Abmachungen/Empfehlungen mit dem Patienten (Schonung, Flüssigkeit, leichte Kost; "
+        "    Analgetika/Antiemetika nur allgemein, ohne Dosen).\n"
+        "  • Danach Termin für Verlauf/Kontrolle (konkret, z. B. 24–48 h).\n"
+        "  • Danach Kriterien für vorzeitige Wiedervorstellung (allgemein, keine Red-Flag-Liste).\n"
+        "  • Keine Wiederholung von in «Befunde» erhobenem/geplantem Labor/POCT/Bildgebung.\n"
+        "  • Diagnostik nur in der Abschlusszeile: «- Bei Persistenz/Progredienz: …» (z. B. Bildgebung oder erweitertes Labor).\n"
+        "- Schweizer Standards."
     )
 
     user_payload = {
@@ -476,13 +947,20 @@ def generate_assessment_and_plan_german(
     # Fallback: unstrukturierter Aufruf (falls JSON-Helper nicht verfügbar)
     if not (beurteilung and prozedere):
         try:
-            raw = ask_openai(sys_msg + "\n\n" + prompt_user)  # noqa: F821  (dein Fallback-Helper)
-            # sehr schlanke Rettung, falls Rohtext zurückkommt
+            raw = ask_openai(sys_msg + "\n\n" + prompt_user)  # noqa: F821  (Fallback-Helper)
             beurteilung = beurteilung or (raw.split("Prozedere:")[0].strip() if "Prozedere:" in raw else raw.strip())
             prozedere  = prozedere  or (raw.split("Prozedere:", 1)[1].strip() if "Prozedere:" in raw else "• keine Angaben")
         except Exception:
             beurteilung = beurteilung or "keine Angaben"
             prozedere  = prozedere  or "• keine Angaben"
+
+    # Nachbearbeitung
+    prozedere = _dedupe_diagnostics_in_plan(befunde or "", prozedere or "")
+    prozedere = _ensure_persistence_line(
+        prozedere,
+        default_hint="- Bei Persistenz/Progredienz: Bildgebung oder erweitertes Labor je nach Klinik erwägen."
+    )
+    prozedere = _normalize_plan_bullets(prozedere)
 
     return (beurteilung or "keine Angaben").strip(), (prozedere or "• keine Angaben").strip()
 

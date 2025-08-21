@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# seit gestern fieber, bauchschmerzen, in der nacht schüttelfrost und schwindel.
 """
 Praxis-Assistent – Tkinter GUI (robust gegen API-/Signatur-Drift)
 -----------------------------------------------------------------
@@ -225,7 +226,7 @@ def _build_exam_lueckentext(focus: str = "allg", phase: str = "initial", cues: O
     cues = cues or {}
     blocks: List[str] = []
     # Kurzstatus immer zuerst (ohne führendes "- ", das fügen wir unten ein)
-    blocks.append("AZ: wach, orientiert, kooperativ; Haut/Schleimhäute: ____; Temp: ____")
+    blocks.append("Guter Reduzierter AZ, kardiopulmonal kompensiert.")
 
     if focus == "msk_wrist":
         blocks += [
@@ -236,7 +237,7 @@ def _build_exam_lueckentext(focus: str = "allg", phase: str = "initial", cues: O
         ]
         spec: List[str] = []
         if cues.get("trauma"):
-            spec.append("Spezial: Snuffbox-Druckschmerz ____; axialer Daumenkompressionsschmerz ____; Stabilität DRUG ____")
+            spec.append("Spezial: Tabatiere-Druckschmerz ____; axialer Daumenkompressionsschmerz ____; Stabilität DRUG ____")
         if cues.get("overuse") or cues.get("radial"):
             spec.append("Spezial: Finkelstein-Test (de Quervain) ____; EPL/ECU-Sehne ____")
         if cues.get("numbness"):
@@ -245,8 +246,32 @@ def _build_exam_lueckentext(focus: str = "allg", phase: str = "initial", cues: O
             spec.append("Spezial: TFCC-Belastungstest ____")
         if spec:
             blocks += spec
-        poct = "POCT: — (keine); Ultraschall falls verfügbar."
-        persist = "Bildgebung bei Persistenz/Progredienz (Rx Handgelenk inkl. Skaphoid-Serie oder US), ggf. Ortho/Handchirurgie."
+        poct = "Labor/POCT (bei Bedarf): CRP; ggf. BZ. Bildgebung nicht initial."
+        persist = "Bei Persistenz/Progredienz: Bildgebung (Rx Handgelenk inkl. Skaphoid-Serie/US) erwägen; evtl. Überweisung Ortho/Handchirurgie."
+
+
+    elif focus == "msk_ankle":
+        blocks += [
+            "OSG/Fuss: Inspektion ____ (Schwellung/Rötung/Hämatom/Fehlstellung)",
+            "Palpation: Malleolus lat/med ____; Lig. ATFL/CFL/PTFL ____; Syndesmose ____; Talus/Calcaneus ____; Basis Os metatarsale V ____; Os naviculare ____",
+            "Beweglichkeit: Dorsalflex ____/Plantarflex ____/Inversion ____/Eversion ____; Zehenstand/Fersenstand ____",
+            "Stabilität: Taluskipp ____; vorderer Schubladentest ____; Syndesmosetests (Squeeze/External‑Rotation) ____",
+            "Belastbarkeit: 4 Schritte möglich? ____",
+            "Neurovaskulär: Sensibilität Fussrücken/Plantar ____; A. dorsalis pedis/tibialis post. ____; Kapillarfüllung ____ (Vergleich Gegenseite)",
+        ]
+        spec: List[str] = []
+        if cues.get("swelling"):
+            spec.append("Umfang/Erguss ____; Druckdolenz lokalisiert ____")
+        if cues.get("trauma"):
+            spec.append("Ottawa‑Ankle‑Rules: Knochen‑Druckschmerz Malleolus/Basis MT5/Os naviculare? ____")
+        if cues.get("overuse"):
+            spec.append("Sehnenansätze (Peroneus/Tibialis post./Achillessehne) ____; Tarsaltunnelsymptome ____")
+        if spec:
+            blocks += spec
+        poct = "Labor/POCT: — (keine). Bildgebung initial nach Ottawa‑Regeln."
+        persist = "Bei Persistenz/Progredienz: Rx OSG/Fuss nach Ottawa‑Regeln; ggf. US/MRI; Physio/Ortho erwägen."
+
+
 
     elif focus == "lws":
         blocks += [
@@ -255,25 +280,25 @@ def _build_exam_lueckentext(focus: str = "allg", phase: str = "initial", cues: O
             "Neurologie Beine: Kraft ____; Reflexe (PSR/ASR) ____; Sensibilität ____; Lasègue ____",
             "Gangbild/Zehen-Fersenstand ____",
         ]
-        poct = "POCT (bei Bedarf): CRP, Urin-Stix; ggf. BZ."
-        persist = "Bei Persistenz/Progredienz: Rx LWS oder MRI je nach Klinik; evtl. Überweisung Physio/Ortho/Neurologie."
+        poct = "Labor/POCT (bei Bedarf): CRP; ggf. BZ, Urin-Stix (red flags)."
+        persist = "Bei Persistenz/Progredienz: Rx LWS/MRI je nach Klinik; evtl. Überweisung Physio/Ortho/Neurologie."
 
     elif focus == "thorax":
         blocks += [
             "Herz: Frequenz/Rhythmus ____; Auskultation ____",
-            "Lunge: AF ____; Auskultation ____ (vesikulär/Knisterrasseln/Giemen)",
+            "Lunge: AF ____; Auskultation ____ (vesikulär/Knistergeräusche/Giemen)",
             "Thoraxwand: Druck-/Bewegungsschmerz ____",
         ]
-        poct = "POCT (bei Bedarf): SpO2, EKG, CRP."
-        persist = "Bei Persistenz/Progredienz: Rx Thorax; EKG/Labor nach Klinik."
+        poct = "Labor/POCT (bei Bedarf): CRP; SpO₂/EGK falls verfügbar. Keine Bildgebung initial."
+        persist = "Bei Persistenz/Progredienz: Rx Thorax; erweitertes Labor je nach Klinik."
 
     elif focus == "abdomen":
         blocks += [
             "Abdomen: Inspektion ____; Abwehrspannung ____; Druckdolenz ____; Klopfschmerz ____",
             "Darmgeräusche ____; McBurney/Murphy ____",
         ]
-        poct = "POCT (bei Bedarf): Urin-Stix, CRP, BZ."
-        persist = "Bei Persistenz/Progredienz: Labor/US Abdomen; evtl. Überweisung."
+        poct = "Labor/POCT (bei Bedarf): kleines BB (Lc), CRP, Elektrolyte, BZ; Urin‑Stix."
+        persist = "Bei Persistenz/Progredienz: Bildgebung (US Abdomen, ggf. CT) und erweitertes Labor (Nieren/Leberwerte) erwägen; evtl. Überweisung."
 
     elif focus == "hno":
         blocks += [
@@ -281,16 +306,16 @@ def _build_exam_lueckentext(focus: str = "allg", phase: str = "initial", cues: O
             "Ohren: Trommelfell ____; Nase: Sekretion ____",
             "Lunge (Auskultation) ____",
         ]
-        poct = "POCT (bei Bedarf): Strep-/Influenza-/COVID-Ag."
-        persist = "Bei Persistenz/Progredienz: Labor/Rx je nach Klinik; HNO-Überweisung erwägen."
+        poct = "Labor/POCT (bei Bedarf): CRP; Strep-/Influenza-/COVID‑Ag."
+        persist = "Bei Persistenz/Progredienz: Rx je nach Klinik; erweitertes Labor; HNO‑Überweisung erwägen."
 
     elif focus == "neuro":
         blocks += [
             "Neuro-Status kurz: Vigilanz/Orientierung ____; Paresen ____; Sensibilität ____; Hirnnerven ____",
             "Koordination/Gangbild ____",
         ]
-        poct = "POCT (bei Bedarf): BZ; ggf. EKG."
-        persist = "Bei Persistenz/Progredienz: Neuro-Abklärung; Bildgebung nach Klinik."
+        poct = "Labor/POCT (bei Bedarf): BZ; ggf. CRP. Keine Bildgebung initial."
+        persist = "Bei Persistenz/Progredienz: Neuro‑Abklärung; Bildgebung je nach Klinik."
 
     else:  # allg
         blocks += [
@@ -298,9 +323,8 @@ def _build_exam_lueckentext(focus: str = "allg", phase: str = "initial", cues: O
             "Lunge: AF ____; Auskultation ____",
             "Abdomen: weich/nicht druckdolent ____",
         ]
-        poct = "POCT (bei Bedarf): CRP, BZ, Urin-Stix."
-        persist = "Bei Persistenz/Progredienz: weiterführende Abklärung nach Klinik."
-
+        poct = "Labor/POCT (bei Bedarf): CRP, BZ, Urin‑Stix."
+        persist = "Bei Persistenz/Progredienz: weiterführende Diagnostik (inkl. erweitertes Labor/Bildgebung) nach Klinik."
     # Checkliste unten anhängen
 
     checklist = [
@@ -337,12 +361,13 @@ class ConsultationAssistant:
         self.last_zusatzfragen: List[str] = []
         self.last_zusatzfragen_qa: List[Tuple[str, str]] = []
         self.humanize_var = tk.BooleanVar(value=False)
-
+        self.score_advice: Dict[str, Any] = {} 
+        
         # Layout
         self._label("Anamnese (frei)")
         self.fields["Anamnese"] = self._text(height=6)
 
-        self._button("1) Zusatzfragen erzeugen", self.on_gaptext)
+        self._button("Anamnese erweitern", self.on_gaptext)
         self._label("Anamnese – Lückentext (editierbar)")
         self.txt_gap = self._text(height=6)
         self.fields["Anamnese – Lückentext (editierbar)"] = self.txt_gap
@@ -353,6 +378,7 @@ class ConsultationAssistant:
         tk.Button(toolbar, text="2) Befunde (Lückentext, Basis)", command=self.on_befunde_gaptext).pack(side="left", padx=4)
         tk.Button(toolbar, text="➕ Mehr (bei Persistenz)", command=lambda: self.on_befunde_gaptext(phase="persistent")).pack(side="left", padx=4)
         tk.Button(toolbar, text="Basis-Untersuchungen (Freitext)", command=self.on_basic_exams).pack(side="left", padx=12)
+        tk.Button(toolbar, text="Scores prüfen", command=self.on_score_screen).pack(side="left", padx=4)
 
         self._label("Befunde (werden überschrieben)")
         self.fields["Befunde"] = self._text(height=6)
@@ -530,6 +556,28 @@ class ConsultationAssistant:
         if not anamnese:
             messagebox.showwarning("Hinweis", "Keine Anamnese vorhanden.")
             return
+
+        # 🔎 Preflight: scorebasierte Gates (zuerst Ottawa; später erweiterbar)
+        try:
+            from gpt_logic import pre_assessment_gate  # lokal
+            gate = pre_assessment_gate(anamnese, befunde)
+        except Exception:
+            gate = None
+
+        if gate and gate.get("block"):
+            # Interims-Ausgabe anzeigen und LLM überspringen
+            assess = gate.get("assessment", "")
+            plan = gate.get("plan", "")
+            if self.humanize_var.get():
+                assess = inject_typos(assess, max_typos=1)
+                plan = inject_typos(plan, max_typos=1)
+            self.fields["Beurteilung"].delete("1.0", tk.END)
+            self.fields["Beurteilung"].insert(tk.END, assess.strip() + "\n")
+            self.fields["Prozedere"].delete("1.0", tk.END)
+            self.fields["Prozedere"].insert(tk.END, plan.strip() + "\n")
+            return
+
+        # ✅ Kein Block → normales LLM
         try:
             assess, plan = self._call_assess_plan_adapter(anamnese, befunde)
         except Exception as e:
@@ -577,7 +625,94 @@ class ConsultationAssistant:
         self.output_full.delete("1.0", tk.END)
         self.output_full.insert(tk.END, full_block)
 
-    # --- Red Flags & Output ---
+    def on_score_screen(self):
+        anamnese = self.fields["Anamnese"].get("1.0", "end").strip()
+        befunde = self.fields["Befunde"].get("1.0", "end").strip()
+        if not anamnese and not befunde:
+            messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese/Befunde erfassen.")
+            return
+        try:
+            from gpt_logic import discover_relevant_scores
+            payload = discover_relevant_scores(anamnese, befunde) or {}
+            scores = payload.get("scores", [])
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Score-Screening fehlgeschlagen:\n{e}")
+            return
+        if not scores:
+            messagebox.showinfo("Scores", "Keine passenden Scores vorgeschlagen.")
+            return
+
+        win = tk.Toplevel(self.root); win.title("Scores prüfen"); win.configure(bg="#222"); win.geometry("760x560")
+        vars_by_score: Dict[str, Dict[str, tk.BooleanVar]] = {}
+
+        for sc in scores:
+            frm = tk.LabelFrame(win, text=f"{sc.get('name')} – {sc.get('version')}", fg="white", bg="#222")
+            frm.pack(fill="x", padx=8, pady=6)
+            tk.Label(frm, text=sc.get("why",""), fg="white", bg="#222", anchor="w", justify="left").pack(fill="x", padx=6)
+            vmap: Dict[str, tk.BooleanVar] = {}
+            for it in sc.get("items", []):
+                v = tk.BooleanVar(value=False)  # optional: hier auto-Vorbelegung via Textsuche
+                vmap[it["key"]] = v
+                tk.Checkbutton(frm, text=f"{it['label']}  ({it['collect_in']})", variable=v, bg="#222", fg="white", selectcolor="#333").pack(anchor="w")
+            vars_by_score[sc["name"]] = vmap
+
+        summary = tk.Label(win, text="", fg="white", bg="#222", anchor="w", justify="left")
+        summary.pack(fill="x", padx=8, pady=4)
+
+        def on_compute():
+            txts = []
+            advice: Dict[str, Any] = {}
+            for sc in scores:
+                name = sc["name"]
+                crit = {k: v.get() for k, v in vars_by_score[name].items()}
+                if name.lower().startswith("ottawa ankle"):
+                    from gpt_logic import ottawa_recommendation
+                    rec = ottawa_recommendation(crit)
+                    advice["ottawa_ankle"] = {"criteria": crit, "rec": rec}
+                    txts.append(f"Ottawa: {rec.get('summary','')}")
+                elif name.lower().startswith("revised geneva"):
+                    from gpt_logic import geneva_recommendation
+                    rec = geneva_recommendation(crit)
+                    advice["revised_geneva"] = {"criteria": crit, "rec": rec}
+                    txts.append(rec.get("summary",""))
+                else:
+                    txts.append(f"{name}: Kriterien erfasst.")
+            self.score_advice = advice
+            # Debug-Ausgabe: zeige normalisierte Ottawa-Merkmale
+            debug_lines = []
+            if "ottawa_ankle" in advice:
+                try:
+                    from gpt_logic import _normalize_ottawa_criteria
+                    norm = _normalize_ottawa_criteria(advice["ottawa_ankle"]["criteria"])
+                    dbg = ", ".join(f"{k}={int(v)}" for k, v in norm.items())
+                    debug_lines.append(f"[Ottawa erkannte Flags] {dbg}")
+                except Exception:
+                    pass
+            if debug_lines:
+                txts += debug_lines            
+            summary.config(text="\n".join(txts) or "Keine Auswertung möglich.")
+
+        def on_apply_to_befunde():
+            on_compute()
+            # kurze Zusammenfassung in Befunde eintragen
+            txt = self.fields["Befunde"].get("1.0", "end").strip()
+            lines = []
+            for sc in scores:
+                name = sc["name"]
+                selected = [label for key,label,_ in [(it["key"], it["label"], it["collect_in"]) for it in sc.get("items",[])]
+                            if vars_by_score[name].get(key) and vars_by_score[name][key].get()]
+                if selected:
+                    lines.append(f"- {name}: " + ", ".join(selected))
+            if lines:
+                txt = (txt + ("\n" if txt else "") + "\n".join(lines)).strip()
+                self.fields["Befunde"].delete("1.0", "end")
+                self.fields["Befunde"].insert("1.0", txt)
+
+        btns = tk.Frame(win, bg="#222"); btns.pack(fill="x", padx=8, pady=8)
+        tk.Button(btns, text="Auswerten", command=on_compute).pack(side="left", padx=4)
+        tk.Button(btns, text="Übernehmen + in Befunde eintragen", command=on_apply_to_befunde).pack(side="left", padx=4)
+        tk.Button(btns, text="Schliessen", command=win.destroy).pack(side="right", padx=4)
+
     def update_red_flags(self, anamnese_text: str, befunde_text: str):
         rf_list: List[str] = []
         if HAVE_RF and load_red_flags and check_red_flags:
@@ -610,11 +745,21 @@ class ConsultationAssistant:
         self.output_full.insert(tk.END, "\n".join(parts).strip())
 
     def copy_output(self):
-        text = self.output_full.get("1.0", tk.END)
-        self.root.clipboard_clear()
-        self.root.clipboard_append(text)
-        self.root.update()
-        messagebox.showinfo("Kopiert", "Gesamtausgabe in Zwischenablage.")
+        """Kopiert den Text aus 'Gesamtausgabe' in die Zwischenablage (macOS-sicher)."""
+        try:
+            text = self.output_full.get("1.0", "end-1c").strip()
+        except Exception:
+            text = ""
+        if not text:
+            messagebox.showinfo("Hinweis", "Nichts zu kopieren.")
+            return
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update()  # macOS: Clipboard commit
+            messagebox.showinfo("Kopiert", "Gesamtausgabe in Zwischenablage.")
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Kopieren fehlgeschlagen:\n{e}")
 
     def reset_all(self):
         for k in ("Anamnese", "Befunde", "Beurteilung", "Prozedere"):
@@ -624,6 +769,7 @@ class ConsultationAssistant:
         self.set_red_flags([])
         self.last_zusatzfragen = []
         self.last_zusatzfragen_qa = []
+        self.score_advice = {}
 
 
 # =========================
