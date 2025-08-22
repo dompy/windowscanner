@@ -16,8 +16,9 @@ import json
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
-
 from openai import OpenAI
+
+
 from red_flags_checker import check_red_flags, load_red_flags
 
 # ------------------ Logging ------------------
@@ -25,6 +26,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ------------------ Config & Client ------------------
+
+_client: Optional[OpenAI] = None
+
 MODEL_DEFAULT = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 api_key = os.getenv("OPENAI_API_KEY")
@@ -32,6 +36,19 @@ if not api_key:
     raise EnvironmentError("❌ Umgebungsvariable OPENAI_API_KEY ist nicht gesetzt!")
 
 client = OpenAI(api_key=api_key)
+
+def _get_openai_client() -> OpenAI:
+    """
+    Erst beim Aufruf prüfen, ob OPENAI_API_KEY vorhanden ist.
+    Verhindert Import-Crash der EXE ohne gesetzten Key.
+    """
+    global _client
+    if _client is None:
+        api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+        if not api_key:
+            raise EnvironmentError("❌ Umgebungsvariable OPENAI_API_KEY ist nicht gesetzt!")
+        _client = OpenAI(api_key=api_key)
+    return _client
 
 # ------------------ Pfade & Resolver ------------------
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -62,8 +79,7 @@ def resolve_red_flags_path(prefer_psych: bool = True) -> str:
 # ------------------ Helper ------------------
 
 def ask_openai(prompt: str) -> str:
-    """Einfacher Wrapper (Deutsch, kurz & präzise)."""
-    resp = client.chat.completions.create(
+    resp = _get_openai_client().chat.completions.create(
         model=MODEL_DEFAULT,
         messages=[
             {"role": "system", "content": "Antworte ausschliesslich auf Deutsch. Knapp, präzise, praxisnah."},
@@ -73,12 +89,8 @@ def ask_openai(prompt: str) -> str:
     )
     return (resp.choices[0].message.content or "").strip()
 
-
-def _ask_openai_json(
-    *, messages: List[Dict[str, str]], model: str = MODEL_DEFAULT, temperature: float = 0.2
-) -> Dict[str, Any]:
-    """Antwort als JSON-Objekt erzwingen (mit robustem Fallback)."""
-    resp = client.chat.completions.create(
+def _ask_openai_json(*, messages: List[Dict[str, str]], model: str = MODEL_DEFAULT, temperature: float = 0.2) -> Dict[str, Any]:
+    resp = _get_openai_client().chat.completions.create(
         model=model,
         messages=messages,
         temperature=temperature,
@@ -90,7 +102,6 @@ def _ask_openai_json(
     except json.JSONDecodeError:
         logger.warning("JSON-Decode fehlgeschlagen, roher Text wird zurückgegeben")
         return {"raw_text": content}
-
 
 def _swiss_style_note(humanize: bool = True) -> str:
     base = (
