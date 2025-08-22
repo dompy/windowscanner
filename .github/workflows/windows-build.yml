@@ -40,6 +40,19 @@ jobs:
             --add-data "%GITHUB_WORKSPACE%\red_flags.json;." ^
             --add-data "%GITHUB_WORKSPACE%\psych_red_flags.json;."
 
+      - name: Smoke test EXE (headless)
+        shell: cmd
+        run: |
+          set OPENAI_API_KEY=dummy
+          dist\PraxisAssistantPsych.exe --smoke-test > smoke.txt
+          type smoke.txt
+
+      - name: Smoke test BAT (headless)
+        shell: cmd
+        run: |
+          set OPENAI_API_KEY=
+          call start_PraxisAssistantPsych.bat test
+
       - name: Copy launcher BAT
         if: ${{ hashFiles('start_PraxisAssistantPsych.bat') != '' }}
         shell: cmd

@@ -3,14 +3,23 @@ setlocal ENABLEDELAYEDEXPANSION
 
 set "APP_DIR=%~dp0"
 set "EXE=%APP_DIR%PraxisAssistantPsych.exe"
+if not exist "%EXE%" if exist "%APP_DIR%dist\PraxisAssistantPsych.exe" set "EXE=%APP_DIR%dist\PraxisAssistantPsych.exe"
 
-rem --- optional: Mark-of-the-Web entfernen (wenn aus ZIP heruntergeladen)
-powershell -NoProfile -Command "Get-ChildItem '%APP_DIR%\PraxisAssistantPsych.exe','%APP_DIR%\start_PraxisAssistantPsych.bat' -ErrorAction SilentlyContinue | Unblock-File" >nul 2>&1
+rem Mark-of-the-Web entfernen (optional)
+powershell -NoProfile -Command "Get-ChildItem '%EXE%','%~f0' -ErrorAction SilentlyContinue | Unblock-File" >nul 2>&1
+
+rem ---- Testmodus: nur Voraussetzungen pruefen, keine GUI ----
+if /I "%1"=="test" (
+  if "%OPENAI_API_KEY%"=="" set "OPENAI_API_KEY=dummy"
+  "%EXE%" --smoke-test
+  echo SMOKE_EXIT=%ERRORLEVEL%
+  exit /b %ERRORLEVEL%
+)
 
 if not exist "%EXE%" (
   echo Fehler: EXE nicht gefunden unter:
   echo   "%EXE%"
-  echo Bitte ZIP komplett entpacken und sicherstellen, dass EXE und BAT im selben Ordner liegen.
+  echo Bitte ZIP komplett entpacken; EXE und BAT im selben Ordner.
   pause
   exit /b 1
 )
@@ -23,7 +32,6 @@ if "%OPENAI_API_KEY%"=="" (
     pause
     exit /b 1
   )
-  rem fuer zukuenftige Sitzungen persistent speichern:
   setx OPENAI_API_KEY "%OPENAI_API_KEY%" >nul
   echo Key gespeichert (Benutzer-Umgebungsvariable).
 )

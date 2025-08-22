@@ -1,6 +1,23 @@
-import os
+import sys, platform, json, os
 import tkinter as tk
 from tkinter import scrolledtext, messagebox
+
+def _smoke_test() -> int:
+    """Startet keine GUI. Prüft nur, ob EXE & Ressourcen grundsätzlich laufen."""
+    try:
+        from gpt_logic import resolve_red_flags_path
+        p = resolve_red_flags_path(prefer_psych=True)  # oder False im Hausarzt-Branch
+        print(json.dumps({
+            "ok": True,
+            "platform": platform.platform(),
+            "red_flags_path_exists": os.path.exists(p),
+            "red_flags_path": p,
+            "has_api_key": bool(os.getenv("OPENAI_API_KEY")),
+        }))
+        return 0
+    except Exception as e:
+        print(json.dumps({"ok": False, "error": str(e)}))
+        return 1
 
 # Logikfunktionen (Psychologie)
 from gpt_logic import (
@@ -252,6 +269,8 @@ class ConsultationAssistant:
 
 
 def main():
+    if "--smoke-test" in sys.argv:
+        sys.exit(_smoke_test())  # sofort beenden, keine GUI
     root = tk.Tk()
     app = ConsultationAssistant(root)
     root.mainloop()
