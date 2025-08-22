@@ -14,12 +14,12 @@ import sys
 from typing import Callable, Optional, Tuple
 
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, simpledialog
+from tkinter import messagebox, scrolledtext, simpledialog, ttk
 
 from gpt_logic import (
     generate_anamnese_gaptext_german,
     generate_assessment_and_plan_german,
-    generate_befunde_gaptext_german,
+    generate_status_gaptext_german,
     generate_full_entries_german,
     resolve_red_flags_path,
 )
@@ -89,35 +89,59 @@ def _smoke_test() -> int:
         return 1
 
 
+def _subheading(self, parent: tk.Misc, text: str):
+    tk.Label(parent, text=text, fg="white", bg="#222", anchor="w",
+             font=("Arial", 10, "bold")).pack(fill="x")
+
 class ConsultationAssistant:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("🩺 Praxis-Assistent – Hausarzt")
+        self.root.title("🩺 Pezzi PsyMate")
         self.root.geometry("1000x820")
         self.root.configure(bg="#222")
+
+        # ttk-Theme & Button-Style (flach, cross-platform)
+        self.style = ttk.Style()
+        try:
+            self.style.theme_use("clam")   # erlaubt Farbanpassungen auch auf macOS
+        except Exception:
+            pass
+
+        self.style.configure(
+            "Primary.TButton",
+            padding=(10, 4),
+            borderwidth=0,
+            focusthickness=0,
+            foreground="white",
+            background="#333"
+        )
+        self.style.map(
+            "Primary.TButton",
+            background=[("active", "#444"), ("pressed", "#222"), ("!disabled", "#333")],
+            relief=[("pressed", "flat"), ("!pressed", "flat")]
+        )
 
         self.fields: dict[str, scrolledtext.ScrolledText] = {}
 
         # Anamnese (frei)
-        self._label("Anamnese (frei)")
+        self._label("Anamnese")
         self.fields["Anamnese"] = self._text(height=6)
 
         # Zusatzfragen
         self._button("Anamnese erweitern", self.on_gaptext)
-        self._label("Anamnese – Lückentext (editierbar)")
+        self._label("Erweiterte Anamnese")
         self.txt_gap = self._text(height=6)
 
-        # Befunde
+        # status
         bar = tk.Frame(self.root, bg="#222")
-        bar.pack(fill="x", padx=8, pady=(0, 4))
-        tk.Button(bar, text="Befunde (Basis)", command=lambda: self.on_befunde_gaptext("initial")).pack(side="left", padx=4)
-        tk.Button(bar, text="+ Mehr (bei Persistenz)", command=lambda: self.on_befunde_gaptext("persistent")).pack(side="left", padx=4)
+        bar.pack(fill="x", padx=8, pady=(6, 4))
+        self._button("Status", lambda: self.on_status_gaptext("initial"), parent=bar)
 
-        self._label("Befunde (werden überschrieben)")
-        self.fields["Befunde"] = self._text(height=7)
+        self._label("Status (wird überschrieben)")
+        self.fields["Status"] = self._text(height=7)
 
-        # Beurteilung + Prozedere
-        self._button("Beurteilung + Prozedere finalisieren", self.on_finalize)
+        # Einschätzung + Prozedere
+        self._button("Einschätzung + Prozedere", self.on_finalize)
 
         cols = tk.Frame(self.root, bg="#222")
         cols.pack(fill="both", expand=True, padx=8)
@@ -126,11 +150,12 @@ class ConsultationAssistant:
         right = tk.Frame(cols, bg="#222")
         right.pack(side="left", fill="both", expand=True, padx=(4, 0))
 
-        tk.Label(left, text="Beurteilung", fg="white", bg="#222", anchor="w").pack(fill="x")
-        self.fields["Beurteilung"] = self._text(parent=left, height=8)
+        self._label("Einschätzung", parent=left)
+        self.fields["Einschätzung"] = self._text(parent=left, height=8)
 
-        tk.Label(right, text="Prozedere", fg="white", bg="#222", anchor="w").pack(fill="x")
+        self._label("Empfohlenes Prozedere", parent=right)
         self.fields["Prozedere"] = self._text(parent=right, height=8)
+
 
         # Red Flags
         self._label("⚠️ Red Flags (Info, nicht in den Feldern)")
@@ -140,27 +165,39 @@ class ConsultationAssistant:
         # Utilities
         util = tk.Frame(self.root, bg="#222")
         util.pack(fill="x", padx=8, pady=(6, 0))
-        tk.Button(util, text="Alles generieren (4 Felder)", command=self.on_generate_full_direct).pack(side="left", padx=4)
-        tk.Button(util, text="Gesamtausgabe kopieren", command=self.copy_output).pack(side="left", padx=4)
-        tk.Button(util, text="Reset", command=self.reset_all).pack(side="left", padx=4)
+        self._button("Alles generieren", self.on_generate_full_direct, parent=util, side="left")
+        self._button("Gesamtausgabe kopieren", self.copy_output, parent=util, side="left")
+        self._button("Reset", self.reset_all, parent=util, side="left")
 
-        self._label("Gesamtausgabe (kopierfertig)")
+        self._label("Gesamtausgabe")
         self.output_full = self._text(height=10)
 
     # ---------- UI helpers ----------
-    def _label(self, text: str):
-        tk.Label(self.root, text=text, fg="white", bg="#222", anchor="w", font=("Arial", 10, "bold")).pack(
-            fill="x", padx=8, pady=(8, 0)
-        )
+    def _label(self, text: str, parent: Optional[tk.Misc] = None, size: int = 10):
+        parent = parent or self.root
+        tk.Label(
+            parent, text=text, fg="white", bg="#222", anchor="w",
+            font=("Arial", size, "bold")
+        ).pack(fill="x", padx=8 if parent is self.root else 0, pady=(8, 0))
+
 
     def _text(self, height=6, parent: Optional[tk.Misc] = None) -> scrolledtext.ScrolledText:
         parent = parent or self.root
         t = scrolledtext.ScrolledText(parent, height=height, wrap=tk.WORD, bg="#111", fg="white", insertbackground="white")
-        t.pack(fill="both", expand=False, padx=8, pady=(4, 0))
+        t.pack(fill="both", expand=False, padx=8, pady=(4, 4))
         return t
 
-    def _button(self, label: str, cmd: Callable[[], None]):
-        tk.Button(self.root, text=label, command=cmd).pack(padx=8, pady=(6, 0), anchor="w")
+    def _button(self, label: str, cmd: Callable[[], None],
+                parent: Optional[tk.Misc] = None, side: Optional[str] = None):
+        parent = parent or self.root
+        btn = ttk.Button(parent, text=label, command=cmd, style="Primary.TButton")
+        pad_x = 8 if parent is self.root else 4
+        if side:
+            btn.pack(side=side, padx=pad_x, pady=(6, 0), anchor="w")
+        else:
+            btn.pack(padx=pad_x, pady=(6, 0), anchor="w")
+        return btn
+
 
     # ---------- Gemeinsamer Retry-Wrapper ----------
     def _call_with_key_retry(self, action_name: str, fn: Callable[[], Tuple[Optional[dict], Optional[str]] | Tuple[str, str] | str | None]):
@@ -188,7 +225,7 @@ class ConsultationAssistant:
     def on_gaptext(self):
         raw = self.fields["Anamnese"].get("1.0", tk.END).strip()
         if not raw:
-            messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese (frei) eingeben.")
+            messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese eingeben.")
             return
 
         def _do():
@@ -202,7 +239,7 @@ class ConsultationAssistant:
         self.txt_gap.delete("1.0", tk.END)
         self.txt_gap.insert(tk.END, gap or "")
 
-    def on_befunde_gaptext(self, phase: str = "initial"):
+    def on_status_gaptext(self, phase: str = "initial"):
         gap = self.txt_gap.get("1.0", tk.END).strip() if hasattr(self, "txt_gap") else ""
         anamnese_src = gap or self.fields.get("Anamnese").get("1.0", tk.END).strip()
         if not anamnese_src:
@@ -210,46 +247,46 @@ class ConsultationAssistant:
             return
 
         def _do():
-            payload, bef_text = generate_befunde_gaptext_german(anamnese_src, phase=phase)
+            payload, bef_text = generate_status_gaptext_german(anamnese_src, phase=phase)
             return payload, bef_text
 
-        result = self._call_with_key_retry("Befunde-Lückentext", _do)
+        result = self._call_with_key_retry("status-Lückentext", _do)
         if not result:
             return
         payload, bef_text = result  # type: ignore[misc]
 
         if phase == "initial":
-            self.fields["Befunde"].delete("1.0", tk.END)
-            self.fields["Befunde"].insert(tk.END, bef_text or "")
+            self.fields["Status"].delete("1.0", tk.END)
+            self.fields["Status"].insert(tk.END, bef_text or "")
         else:
-            current = self.fields["Befunde"].get("1.0", tk.END).strip()
+            current = self.fields["Status"].get("1.0", tk.END).strip()
             if current:
-                self.fields["Befunde"].insert(tk.END, "\n\n")
-            self.fields["Befunde"].insert(tk.END, bef_text or "")
+                self.fields["Status"].insert(tk.END, "\n\n")
+            self.fields["Status"].insert(tk.END, bef_text or "")
 
     def on_finalize(self):
         anamnese_final = self.txt_gap.get("1.0", tk.END).strip() or self.fields["Anamnese"].get("1.0", tk.END).strip()
-        befunde_final = self.fields["Befunde"].get("1.0", tk.END).strip()
+        status_final = self.fields["Status"].get("1.0", tk.END).strip()
         if not anamnese_final:
             messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese/Lückentext erstellen.")
             return
 
         def _do():
-            beurteilung, prozedere = generate_assessment_and_plan_german(anamnese_final, befunde_final)
-            return beurteilung, prozedere
+            einschätzung, prozedere = generate_assessment_and_plan_german(anamnese_final, status_final)
+            return einschätzung, prozedere
 
         result = self._call_with_key_retry("Finalisierung", _do)
         if not result:
             return
-        beurteilung, prozedere = result  # type: ignore[misc]
+        einschätzung, prozedere = result  # type: ignore[misc]
 
-        self.fields["Beurteilung"].delete("1.0", tk.END)
-        self.fields["Beurteilung"].insert(tk.END, beurteilung or "")
+        self.fields["Einschätzung"].delete("1.0", tk.END)
+        self.fields["Einschätzung"].insert(tk.END, einschätzung or "")
         self.fields["Prozedere"].delete("1.0", tk.END)
         self.fields["Prozedere"].insert(tk.END, prozedere or "")
 
-        self.update_red_flags(anamnese_final, befunde_final)
-        self.build_output(anamnese_final, befunde_final, beurteilung, prozedere)
+        self.update_red_flags(anamnese_final, status_final)
+        self.build_output(anamnese_final, status_final, einschätzung, prozedere)
 
     def on_generate_full_direct(self):
         parts: list[str] = []
@@ -259,13 +296,13 @@ class ConsultationAssistant:
         if anamnese_src:
             parts.append("Anamnese: " + anamnese_src)
 
-        bef = self.fields["Befunde"].get("1.0", tk.END).strip()
-        beu = self.fields["Beurteilung"].get("1.0", tk.END).strip()
+        bef = self.fields["Status"].get("1.0", tk.END).strip()
+        beu = self.fields["Einschätzung"].get("1.0", tk.END).strip()
         proz = self.fields["Prozedere"].get("1.0", tk.END).strip()
         if bef:
-            parts.append("Befunde: " + bef)
+            parts.append("Status: " + bef)
         if beu:
-            parts.append("Beurteilung: " + beu)
+            parts.append("Einschätzung: " + beu)
         if proz:
             parts.append("Prozedere: " + proz)
 
@@ -285,10 +322,10 @@ class ConsultationAssistant:
 
         self.fields["Anamnese"].delete("1.0", tk.END)
         self.fields["Anamnese"].insert(tk.END, (payload.get("anamnese_text") or ""))
-        self.fields["Befunde"].delete("1.0", tk.END)
-        self.fields["Befunde"].insert(tk.END, (payload.get("befunde_text") or ""))
-        self.fields["Beurteilung"].delete("1.0", tk.END)
-        self.fields["Beurteilung"].insert(tk.END, (payload.get("beurteilung_text") or ""))
+        self.fields["Status"].delete("1.0", tk.END)
+        self.fields["Status"].insert(tk.END, (payload.get("status_text") or ""))
+        self.fields["Einschätzung"].delete("1.0", tk.END)
+        self.fields["Einschätzung"].insert(tk.END, (payload.get("einschätzung_text") or ""))
         self.fields["Prozedere"].delete("1.0", tk.END)
         self.fields["Prozedere"].insert(tk.END, (payload.get("prozedere_text") or ""))
 
@@ -299,13 +336,13 @@ class ConsultationAssistant:
         self.output_full.insert(tk.END, full_block)
 
     # ---------- Red Flags ----------
-    def update_red_flags(self, anamnese_text: str, befunde_text: str):
+    def update_red_flags(self, anamnese_text: str, status_text: str):
         rf_list: list[str] = []
         if load_red_flags and check_red_flags:
             try:
                 path = resolve_red_flags_path(prefer_psych=False)
                 data = load_red_flags(path)
-                rf_hits = check_red_flags(anamnese_text + "\n" + befunde_text, data, return_keywords=True) or []
+                rf_hits = check_red_flags(anamnese_text + "\n" + status_text, data, return_keywords=True) or []
                 rf_list = [f"{kw} – {msg}" for (kw, msg) in rf_hits]
             except Exception:
                 rf_list = []
@@ -318,12 +355,12 @@ class ConsultationAssistant:
             self.txt_redflags.insert(tk.END, "\n".join(f"- {x}" for x in items))
         self.txt_redflags.configure(state="disabled")
 
-    def build_output(self, anamnese: str, befunde: str, beurteilung: str, prozedere: str):
+    def build_output(self, anamnese: str, status: str, einschätzung: str, prozedere: str):
         parts: list[str] = [
-            "Anamnese:", anamnese or "keine Angaben", "",
-            "Befunde:", befunde or "keine Angaben", "",
-            "Beurteilung:", beurteilung or "keine Angaben", "",
-            "Prozedere:", prozedere or "keine Angaben",
+            anamnese or "keine Angaben", "",
+            status or "keine Angaben", "",
+            einschätzung or "keine Angaben", "",
+            prozedere or "keine Angaben",
         ]
         self.output_full.delete("1.0", tk.END)
         self.output_full.insert(tk.END, "\n".join(parts).strip())
@@ -336,7 +373,7 @@ class ConsultationAssistant:
         messagebox.showinfo("Kopiert", "Gesamtausgabe in Zwischenablage.")
 
     def reset_all(self):
-        for k in ("Anamnese", "Befunde", "Beurteilung", "Prozedere"):
+        for k in ("Anamnese", "Status", "Einschätzung", "Prozedere"):
             self.fields[k].delete("1.0", tk.END)
         self.txt_gap.delete("1.0", tk.END)
         self.output_full.delete("1.0", tk.END)

@@ -7,7 +7,7 @@ Psychologie-fokussierte Logik für den Praxis-Assistenten
     * resolve_red_flags_path()
     * generate_full_entries_german()
     * generate_anamnese_gaptext_german()
-    * generate_befunde_gaptext_german()
+    * generate_status_gaptext_german()
     * generate_assessment_and_plan_german()
 """
 from __future__ import annotations
@@ -78,7 +78,7 @@ def ask_openai(prompt: str) -> str:
     resp = _get_openai_client().chat.completions.create(
         model=MODEL_DEFAULT,
         messages=[
-            {"role": "system", "content": "Antworte ausschliesslich auf Deutsch. Knapp, präzise, praxisnah."},
+            {"role": "system", "content": "Antworte ausschliesslich auf Deutsch. Umfassend, präzise, praxisnah."},
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
@@ -116,8 +116,8 @@ def _format_full_entries_block(payload: Dict[str, Any]) -> str:
     parts.append("Anamnese:")
     parts.append((payload.get("anamnese_text") or "keine Angaben").strip())
     parts.append("")
-    parts.append("Befunde:")
-    parts.append((payload.get("befunde_text") or "keine Angaben").strip())
+    parts.append("Status:")
+    parts.append((payload.get("status_text") or "keine Angaben").strip())
     parts.append("")
     parts.append("Beurteilung:")
     parts.append((payload.get("beurteilung_text") or "keine Angaben").strip())
@@ -132,7 +132,7 @@ def _format_full_entries_block(payload: Dict[str, Any]) -> str:
 def generate_full_entries_german(
     user_input: str, context: Optional[Dict[str, Any]] = None
 ) -> Tuple[Dict[str, str], str]:
-    """Erzeugt vier dokumentationsfertige Felder (Anamnese/Befunde/Einschätzung/Prozedere).
+    """Erzeugt vier dokumentationsfertige Felder (Anamnese/Psychopathologischer Befund/Einschätzung/Prozedere).
 
     Gibt zusätzlich (falls vorhanden) eine Liste "red_flags" im Payload zurück.
     """
@@ -152,15 +152,15 @@ def generate_full_entries_german(
         "Ziel: Erzeuge vier dokumentationsfertige Felder (Deutsch), direkt kopierbar.\n"
         "WICHTIG:\n"
         "- Nichts erfinden. Wo Angaben fehlen: \"keine Angaben\", \"nicht erhoben\" oder \"noch ausstehend\".\n"
-        "- Inhalte & Stil (telegraphisch, knapp, praxisnah; Schweizer Orthografie, kein ß, kein z.B.):\n"
+        "- Inhalte & Stil (telegraphisch, umfassend, praxisnah; Schweizer Orthografie, kein ß, kein z.B.):\n"
         "  • Anamnese: Hauptanliegen, Beginn/Verlauf, Auslöser/Belastung, Ressourcen/Schutzfaktoren, Vorerfahrungen, relevante somatische/psychiatrische Vorerkrankungen & Medikation nur nennen, Substanzkonsum, Kontext (Arbeit/Beziehung/Soziales).\n"
-        "  • Befunde: psychopathologischer Status (Erscheinung/Verhalten, Stimmung/Affekt, Antrieb, Denken/Inhalt, Wahrnehmung, Orientierung/Kognition, Insight), Risikoabschätzung (Suizidalität/Fremdgefährdung: ja/nein/unklar, Schutzfaktoren), Funktionsniveau kurz. Keine körperlichen Untersuchungen.\n"
-        "  • Beurteilung: psychologische Einschätzung/Hypothesen (kurz, plausibel), 2–4 Alternativhypothesen/Komorbiditätserwägungen, Schweregrad/Dringlichkeit.\n"
+        "  • Status: psychopathologischer Status (Erscheinung/Verhalten, Stimmung/Affekt, Antrieb, Denken/Inhalt, Wahrnehmung, Orientierung/Kognition, Insight), Risikoabschätzung (Suizidalität/Fremdgefährdung: ja/nein/unklar, Schutzfaktoren), Funktionsniveau kurz. Keine körperlichen Untersuchungen.\n"
+        "  • Beurteilung: psychologische Einschätzung/Hypothesen (umfassend, plausibel), 2–4 Alternativhypothesen/Komorbiditätserwägungen, Schweregrad/Dringlichkeit.\n"
         "  • Prozedere: klare Bulletpoints (Interventionen, Hausaufgaben, Sicherheit/Krisenplan, Einbezug Dritter nach Einwilligung, Verlauf/Kontrolle, Warnzeichen). Medikation nur als Koordination mit ärztlichen Stellen, keine Dosierungen.\n"
         "- Antworte ausschliesslich als JSON:\n\n"
         "{\n"
         "  \"anamnese_text\": \"string\",\n"
-        "  \"befunde_text\": \"string\",\n"
+        "  \"status_text\": \"string\",\n"
         "  \"beurteilung_text\": \"string\",\n"
         "  \"prozedere_text\": \"string\"\n"
         "}\n"
@@ -196,7 +196,7 @@ def generate_anamnese_gaptext_german(
 
     def _sys_msg_base(note: str) -> str:
         return (
-            "Du bist Psychologe in einer Schweizer Praxis.\n"
+            "Du bist erfahrener Psychologe in einer Schweizer Praxis.\n"
             + note
             + "\n"
             + "Aufgabe: Analysiere den Freitext und formuliere **2–5 gezielte, psychologisch relevante Zusatzfragen**, "
@@ -267,29 +267,28 @@ def generate_anamnese_gaptext_german(
 
 # ------------------ Psychologischer Befund (Lückentext) ------------------
 
-def generate_befunde_gaptext_german(
+def generate_status_gaptext_german(
     anamnese_filled: str,
     humanize: bool = True,
     phase: str = "initial",  # bleibt für API-Kompatibilität erhalten
 ) -> Tuple[Dict[str, Any], str]:
-    """Liefert psychologische Befunde/Exploration als Lückentext/Checkliste (kein Fliesstext)."""
+    """Liefert psychologischen Status/Exploration als Lückentext/Checkliste (kein Fliesstext)."""
     note = _swiss_style_note(humanize)
 
     sys_msg = (
-        "Du bist Psychologe in einer Schweizer Praxis.\n"
+        "Du bist erfahrener Psychologe in einer Schweizer Praxis.\n"
         + note
         + "\n"
-        + "Aufgabe: Erzeuge eine strukturierte Liste **psychologischer Befunde/Explorationspunkte** passend zur Anamnese. "
+        + "Aufgabe: Erzeuge eine strukturierte Liste **psychologischer Status/Explorationspunkte** passend zur Anamnese. "
         + "Kein Fliesstext, **keine körperlichen Untersuchungen**, keine Diagnosen.\n"
         + "WICHTIG:\n"
         + "- KEIN fertiger Statusbericht; nur ausfüllbare Punkte mit Platzhaltern/Optionen.\n"
         + "- Keine konkreten Mess-/Skalenwerte eintragen; nur Struktur zum Ausfüllen.\n"
         + "- Nichts doppeln, was in der Anamnese bereits beantwortet ist.\n"
-        + "- phase=\"initial\": Basis-Exploration; phase=\"persistent\": am Ende eine Zusatzzeile mit 2–3 sinnvollen Erweiterungen (z.B. Fragebögen, Einbezug Dritter, Koordination).\n"
         + "Bevorzugte Bereiche (anpassen je nach Fall): Erscheinung/Verhalten; Stimmung/Affekt; Antrieb/Psychomotorik; "
         + "Denken (Form/Inhalt: Grübeln/Zwang/überwertige Ideen); Wahrnehmung; Kognition/Orientierung/Aufmerksamkeit; Insight/Motivation; "
         + "Substanzkonsum (Art/Menge/Frequenz); Funktionsniveau (Arbeit/Beziehung/Schlaf/Alltag); Ressourcen/Schutzfaktoren; **Risikoabschätzung** (Suizidalität/Fremdgefährdung: ja/nein/unklar, Schutzfaktoren).\n"
-        + "Antworte ausschliesslich als JSON:\n{\n  \"befunde_lueckentext\": \"string\",\n  \"befunde_checkliste\": [\"string\", \"...\"]\n}\n"
+        + "Antworte ausschliesslich als JSON:\n{\n  \"status_lueckentext\": \"string\",\n  \"status_checkliste\": [\"string\", \"...\"]\n}\n"
     ).strip()
 
     usr = {"anamnese_abgeschlossen": anamnese_filled, "phase": phase}
@@ -303,7 +302,7 @@ def generate_befunde_gaptext_german(
 
     bef_text = ""
     if isinstance(result, dict):
-        bef_text = (result.get("befunde_lueckentext") or "").strip()
+        bef_text = (result.get("status_lueckentext") or "").strip()
 
     # Fallback, falls das Modell nichts liefert
     if not bef_text:
@@ -320,22 +319,18 @@ def generate_befunde_gaptext_german(
             "- Ressourcen/Schutzfaktoren: __",
             "- Risikoabschätzung: Suizidalität: ja/nein/unklar (Akutplan? __); Fremdgefährdung: ja/nein/unklar; Schutzfaktoren: __",
         ]
-        if phase == "persistent":
-            lines.append(
-                "Bei Persistenz/Progredienz: standardisierte Fragebögen (PHQ‑9/GAD‑7/PTSD‑Checkliste) __; Einbezug Hausarzt/Psychiatrie/Angehörige nach Einwilligung __; Krisen-/Sicherheitsplan klären __"
-            )
         bef_text = "\n".join(lines)
         result = {
-            "befunde_lueckentext": bef_text,
-            "befunde_checkliste": [
+            "status_lueckentext": bef_text,
+            "status_checkliste": [
                 "Psychischer Status vollständig erhoben",
                 "Risiko (SUI/Fremdgefährdung) aktiv exploriert",
                 "Ressourcen/Schutzfaktoren dokumentiert",
             ],
         }
     else:
-        if isinstance(result, dict) and "befunde_checkliste" not in result:
-            result["befunde_checkliste"] = [
+        if isinstance(result, dict) and "status_checkliste" not in result:
+            result["status_checkliste"] = [
                 "Psychischer Status vollständig erhoben",
                 "Risiko (SUI/Fremdgefährdung) aktiv exploriert",
                 "Ressourcen/Schutzfaktoren dokumentiert",
@@ -348,7 +343,7 @@ def generate_befunde_gaptext_german(
 
 def generate_assessment_and_plan_german(
     anamnese_final: str,
-    befunde_final: str,
+    status_final: str,
     humanize: bool = True,
     phase: str = "initial",
 ) -> Tuple[str, str]:
@@ -356,7 +351,7 @@ def generate_assessment_and_plan_german(
     try:
         path = resolve_red_flags_path(prefer_psych=True)
         red_flags_data = load_red_flags(path)
-        rf_hits = check_red_flags(anamnese_final + "\n" + befunde_final, red_flags_data, return_keywords=True) or []
+        rf_hits = check_red_flags(anamnese_final + "\n" + status_final, red_flags_data, return_keywords=True) or []
         red_flags_list = [f"{kw} – {msg}" for (kw, msg) in rf_hits]
     except Exception:
         red_flags_list = []
@@ -364,7 +359,7 @@ def generate_assessment_and_plan_german(
     note = _swiss_style_note(humanize)
 
     sys_part = (
-        "Du bist Psychologe in einer Schweizer Praxis (ambulante Konsultation).\n"
+        "Du bist erfahrener Psychologe in einer Schweizer Praxis (ambulante Konsultation).\n"
         + note
         + "\nNur notwendige Infos; keine Wiederholungen von bereits Gesagtem. "
         + "Schweizer/Europäische Good Practice priorisieren. Kein ß, nur ss."
@@ -372,7 +367,7 @@ def generate_assessment_and_plan_german(
 
     usr = {
         "anamnese": anamnese_final,
-        "befunde": befunde_final,
+        "status": status_final,
         "phase": phase,
         "red_flags": red_flags_list,
     }
@@ -381,13 +376,13 @@ def generate_assessment_and_plan_german(
         sys_part
         + "\n\nErzeuge zwei fertige Felder:\n\n"
         + "Einschätzung:\n"
-        + "- Psychologische Haupt-Hypothese(n) mit kurzer Begründung, inkl. Schweregrad/Dringlichkeit.\n"
-        + "- 2–4 Alternativhypothesen/Komorbiditäts-Erwägungen (nur wenn sinnvoll), ohne Befunde zu wiederholen.\n"
+        + "- Psychologische Haupt-Hypothese(n) mit ausführlicher Begründung, inkl. Schweregrad/Dringlichkeit.\n"
+        + "- 2–4 Alternativhypothesen/Komorbiditäts-Erwägungen (nur wenn sinnvoll), ohne Status zu wiederholen.\n"
         + "- Falls Red Flags vorliegen (z.B. Suizidalität/Fremdgefährdung/akute Psychose): kurz einordnen (Dringlichkeit/Sicherheitsbedarf).\n\n"
         + "Prozedere:\n"
         + "- Klare Bulletpoints: Setting & Interventionen (Psychoedukation, Aktivitätsaufbau, Exposition/Skills, KVT-Elemente), Hausaufgaben/Arbeitsauftrag.\n"
         + "- Sicherheit: Krisen-/Sicherheitsplan, Notfallkontakte; Einbezug Dritter (Angehörige/Hausarzt/Psychiatrie) nach Einwilligung.\n"
-        + "- Verlauf/Kontrolle: konkretes Intervall.\n"
+        + "- Verlauf/Kontrolle: Indikation zur stationären Behandlung oder konkretes Intervall.\n"
         + "- Medikamente nur als Koordination mit ärztlichen Stellen (keine Dosierungen).\n"
         + "- Optional: Diagnostische Vertiefung (Screenings) nur wenn angezeigt.\n\n"
         + "Antwort: gib zuerst 'Einschätzung', dann eine Leerzeile, dann 'Prozedere'.\n"
@@ -406,6 +401,6 @@ __all__ = [
     "resolve_red_flags_path",
     "generate_full_entries_german",
     "generate_anamnese_gaptext_german",
-    "generate_befunde_gaptext_german",
+    "generate_status_gaptext_german",
     "generate_assessment_and_plan_german",
 ]
