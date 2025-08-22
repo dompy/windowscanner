@@ -22,25 +22,43 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 RED_FLAGS_PATH = os.path.join(THIS_DIR, "red_flags.json")
 
 # Logging (praxisnah, schlank)
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+DEBUG_PROMPTS = os.getenv("DEBUG_PROMPTS", "0").lower() in {"1","true","yes","on"}
+logging.basicConfig(level=logging.DEBUG if DEBUG_PROMPTS else logging.INFO,
+                    format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 # Globaler Stil (kann in einzelnen Funktionen ergänzt werden)
 PROMPT_PREFIX = (
     "Beziehe dich auf anerkannte medizinische Guidelines (Schweiz/Europa priorisiert; danach UK/US). "
-    "Antworte bevorzugt stichpunktartig (ausser explizit Sätze gefordert), kurz, präzise, praxisnah (Schweiz). "
+    "Antworte bevorzugt stichpunktartig (ausser explizit Sätze gefordert), präzise, kurz, praxisnah und exakt (Schweiz). "
     "Schweizer Orthografie (ss statt ß). "
 )
 
 # Hybrid-Kompetenz: Hausarzt + Spezialwissen bei Bedarf (mehr Tiefe, aber praxisnah)
 EXTRA_DEPTH_NOTE = (
-    "Du bist ein erfahrener Hausarzt in der Schweiz. Ziehe bei Bedarf Spezialistenwissen (Innere Medizin, "
-    "Infektiologie, Pneumologie, Kardiologie, Chirurgie usw.) hinzu, priorisiere aber stets die hausärztliche "
-    "Praxisrelevanz. Geh eine Ebene tiefer, wo sinnvoll: \n"
+    "Du bist ein erfahrener Hausarzt in der Schweiz. Ziehe bei Bedarf vertieftes Spezialistenwissen (Innere Medizin, "
+    "Infektiologie, Pneumologie, Kardiologie, Nephrologie, Hepatologie, Gynäkologie, Urologie, Endokrinologie, Chirurgie, Kardiologie, Onkologie, Psychiatrie usw.) hinzu, priorisiere aber stets die hausärztliche "
+    "Praxisrelevanz. Geh noch eine Ebene tiefer, wo möglich:\n"
     "- Bei Infekten/entzündlichen Zuständen: nenne den wahrscheinlichsten Erreger/Mechanismus.\n"
     "- Bei Differentialdiagnosen: gib für jede 1–2 Stichworte zur Begründung (klinisch/epidemiologisch/pathophysiologisch).\n"
-    "- Bei Therapie: nenne Substanzklasse bzw. erstlinientaugliche Wirkstoffe (generisch), keine Dosierungen.\n"
+    "- IMMER Medikationsabgleich (Medication Reconciliation): erkenne bestehende Wirkstoffe/Klassen, vermeide "
+    "'Start'-Empfehlungen für bereits laufende Therapien; formuliere stattdessen klare Anpassungen "
+    "(Weiterführen vs. Dosisreduktion/Stop/Wechsel) gemäss Leitlinien und klinischem Kontext.\n"
+    "- Therapie: Medikamente, Substanzklasse bzw. erstlinientaugliche Wirkstoffe (generisch), keine Dosierungen.\n"
 )
+
+THERAPY_DECISION_NOTE = (
+    "Therapie-Selektion strikt kontextabhängig:\n"
+    "- Prüfe Indikation, Schweregrad, Ziel der Behandlung (kurativ vs. palliativ), Patientenvorzug.\n"
+    "- Beziehe Performance-Status (z. B. ECOG aus Text ableitbar: bettlägerig/cachexie → schlechtes PS) und Organfunktion "
+    "(z. B. Bilirubin/Kreatinin) ein.\n"
+    "- Wenn Leitlinien klar einen einzelnen Erstlinien-Wirkstoff/eine Regimenbezeichnung favorisieren: nenne genau diesen "
+    "(generischer Name, keine Dosierung/Marke).\n"
+    "- Wenn aufgrund schlechten PS/Komorbiditäten die Nutzen-Schaden-Bilanz gegen systemische Therapie spricht: "
+    "priorisiere 'Best Supportive Care/Hospiz' statt Chemotherapie.\n"
+    "- Medication Reconciliation: starte keine Klasse doppelt; formuliere ggf. Anpassung/Deeskalation.\n"
+)
+
 
 # -----------------------------------------------------------------------------
 # Red-Flags-Loader (optional)
@@ -154,6 +172,10 @@ def generate_full_entries_german(
     sys_msg = (
         "Du bist ein erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
         + EXTRA_DEPTH_NOTE
+        + THERAPY_DECISION_NOTE 
+        + "Beziehe ausdrücklich die bestehende Medikation aus dem Eingabetext ein (Medication Reconciliation). "
+        "Gib KEINE Start-/Eskalations-Empfehlung für eine bereits laufende Wirkstoffklasse ohne klare Begründung; "
+        "bei geeigneten Fällen formuliere Deeskalation (z. B. Steroiddosis reduzieren/absetzen) statt Eskalation.\n"
         + "\n"
         "Ziel: Erzeuge vier dokumentationsfertige Felder (Deutsch), direkt kopierbar.\n"
         "WICHTIG:\n"
@@ -162,7 +184,7 @@ def generate_full_entries_german(
         "  • Anamnese: kurz/telegraphisch; Dauer, Lokalisation/Qualität, relevante zu erfragende Begleitsymptome/Vorerkrankungen/Medikation auflisten, Kontext.\n"
         "  • Befunde: objektiv; Kurzstatus (AZ).\n"
         "  • Beurteilung: Verdachtsdiagnose inkl. typischer Erreger/Mechanismus (falls passend) + 2–4 DD mit je 1–2 Stichworten Begründung.\n"
-        "  • Prozedere: kurze, klare Bulletpoints; nächste Schritte, Verlauf/Kontrolle, Vorzeitige Wiedervorstellung; Medikation nur allgemein (Substanzklasse/erstlinientaugliche Wirkstoffe), keine Dosierungen.\n"
+        "  • Prozedere: kurze, klare Bulletpoints; nächste Schritte, Verlauf/Kontrolle, Vorzeitige Wiedervorstellung; Medikation mit Substanzklasse und Beispielen lokal eingesetzter Pharmaka), keine Dosierungen.\n"
         "- Schweizer/Europäische Guidelines priorisieren (danach UK/US).\n"
         "- Antworte ausschliesslich als JSON:\n\n"
         "{\n"
@@ -209,6 +231,7 @@ def generate_anamnese_gaptext_german(
         return (
             "Du bist ein erfahrener Hausarzt in der Schweiz.\n"
             + EXTRA_DEPTH_NOTE
+            + THERAPY_DECISION_NOTE 
             + "\n"
             + note
             + "\n"
@@ -266,6 +289,7 @@ def generate_befunde_gaptext_german(
     sys_msg = (
         "Du bist ein erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
         + EXTRA_DEPTH_NOTE
+        + THERAPY_DECISION_NOTE 
         + "\n"
         + note
         + "\n"
@@ -331,6 +355,7 @@ def suggest_basic_exams_german(
     sys_msg = (
         "Du bist erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
         + EXTRA_DEPTH_NOTE
+        + THERAPY_DECISION_NOTE 
         + "\n"
         + note
         + "\n"
@@ -359,10 +384,11 @@ def generate_assessment_and_plan_german(
     befunde_final: str,
     humanize: bool = True,
     phase: str = "initial",
+    agent_mode: bool = True
 ) -> Tuple[str, str]:
     """
     Erzeugt 'Beurteilung' (Arbeitsdiagnose + 2–3 DD mit Kurzbegründung inkl. Erreger/Mechanismus, wenn passend)
-    und 'Prozedere' (Praxisplan, substanzklassenbasiert, keine Dosierungen).
+    und 'Prozedere' (Praxisplan, substanzklassenbasiert mit Beispielen lokal eingesetzter Pharmaka, keine Dosierungen).
     """
     try:
         red_flags_data = load_red_flags(RED_FLAGS_PATH)
@@ -376,11 +402,15 @@ def generate_assessment_and_plan_german(
     sys_part = (
         "Du bist ein erfahrener Hausarzt in einer Schweizer Hausarztpraxis.\n"
         + EXTRA_DEPTH_NOTE
+        + THERAPY_DECISION_NOTE 
         + "\n"
         + note
         + "\n"
         "Nur notwendige Infos; keine Wiederholungen von bereits Gesagtem. "
         "Schweizer/Europäische Guidelines priorisieren (danach UK/US). Kein ß, nur ss.\n"
+        "Berücksichtige die bestehende Medikation (Medication Reconciliation). "
+        "Keine 'Start'-Therapie für eine bereits laufende Klasse; stattdessen klare Anpassung "
+        "(Weiterführen vs. Reduktion/Stop/Wechsel) gemäss Leitlinien und Befundlage.\n"
     ).strip()
 
     usr = {
@@ -390,6 +420,13 @@ def generate_assessment_and_plan_german(
         "red_flags": red_flags_list,
     }
 
+    agent_line = (
+        "- Medikamentöse Massnahmen: falls indiziert, mindestens EIN erstlinientauglicher generischer Wirkstoff/Regimenname "
+        "(ohne Dosierung/Marke). "
+        if agent_mode
+        else "- Medikamentöse Massnahmen: Substanzklasse/erstlinientaugliche Wirkstoffe (ohne Dosierung/Marke). "
+    )
+
     prompt = (
         sys_part
         + "\n\nErzeuge zwei fertige Felder:\n\n"
@@ -398,7 +435,10 @@ def generate_assessment_and_plan_german(
         "- 2–3 DD: jeweils mit 1–2 Stichworten zur Begründung (klinisch/epidemiologisch/pathophysiologisch).\n\n"
         "Prozedere:\n"
         "- Unterpunkte, kein Fliesstext. Konkrete nächste Schritte in der Praxis.\n"
-        "- Medikamentöse Massnahmen: Substanzklasse/erstlinientaugliche Wirkstoffe (keine Dosierungen, keine Markennamen).\n"
+        + agent_line
+        + "Wenn aufgrund PS/Komorbiditäten kontraindiziert: 'Best Supportive Care/Hospiz' klar priorisieren. "
+        "Keine Alternativliste.\n"
+        "Falls gleiche Klasse bereits läuft: klar 'Weiterführen' vs. 'Dosisreduktion/Stop/Wechsel' formulieren.\n"
         "- Vorzeitige Wiedervorstellung (Warnzeichen).\n"
         "- Verlauf/Kontrolle (realistisches Intervall).\n"
         "- Bei \"persistent\": kurze Zeile zu weiterführender Abklärung/Überweisung.\n\n"
@@ -419,50 +459,108 @@ def generate_assessment_and_plan_german(
 # Zusatz: Vignetten/MCQ-Analysator (direkte Antwort + Therapie)
 # -----------------------------------------------------------------------------
 
+def _ensure_management_hint(text: str) -> tuple[str, bool]:
+    """
+    Hängt – falls nicht vorhanden – den MCQ-Management-Hint an.
+    Rückgabe: (finaler_text, hint_wurde_angehaengt)
+    """
+    core = "which is the most appropriate management"
+    if core in text.lower():
+        return text, False
+    new_text = (text.rstrip() + "\n\nWhich is the most appropriate management?").strip()
+    return new_text, True
+
+
+
 def analyze_vignette_and_treatment(vignette_text: str) -> Dict[str, Any]:
     """
-    Analysiert klinische Vignetten (inkl. MCQ/USMLE-ähnliche Texte) und liefert direkt die
-    wahrscheinlichste Ursache/Diagnose sowie eine praxisrelevante Therapieempfehlung (ohne Dosierungen).
-
-    Rückgabe-JSON (Beispiel):
-    {
-      "antwort_kurz": "Chlamydia psittaci (Psittakose, atypische Pneumonie) – erstlinientauglich: Doxycyclin (Tetrazykline)",
-      "diagnose": "Atypische Pneumonie durch Chlamydia psittaci (Psittakose)",
-      "wahrscheinlichster_erreger": "Chlamydia psittaci",
-      "begruendung": "Vogelkontakt (Sittiche), Fieber, trockener Husten, LLL-Infiltrat, normale Na+, negative Influenza/SARS-CoV-2",
-      "therapie_empfehlung": "Klasse: Tetrazykline; Wirkstoff: Doxycyclin (ohne Dosierung)",
-      "leitlinienhinweis": "Empirische Erstlinientherapie gemäss CH/EU-Empfehlungen; stationäre Kriterien prüfen bei Hypoxie/Instabilität"
-    }
+    Analysiert klinische Vignetten/MCQs und liefert:
+      - wahrscheinlichste Diagnose/Ursache,
+      - mindestens EIN erstlinientaugliches Medikament/Regimen (oder 'Best Supportive Care/Hospiz'),
+      - Begründung.
+    Keine Dosierungen/Markennamen. CH/EU-Guidelines priorisieren.
     """
+    DECISION_POLICY = (
+        "Entscheidungs-Policy:\n"
+        "- Gib mindestens EINEN Vorschlag aus: entweder 1 generischer Wirkstoff/Regimenname ODER 'Best Supportive Care/Hospiz'.\n"
+        "- Wähle anhand Indikation, Performance-Status (aus Text ableitbar), Organfunktion (Labore) und Patientenziel.\n"
+        "- Medication Reconciliation: Starte keine Klasse, die bereits läuft; formuliere stattdessen Anpassung/Deeskalation, falls passend.\n"
+    )
+
+    KNOWLEDGE_ANCHORS = (
+        "Knowledge-Anker (hochgewichtet, kurz):\n"
+        "- Lithium-assoziierte Polyurie/Polydipsie, hohe Urinmenge, niedrige Urin-Osmolalität: nephrogener DI → Amilorid (ENaC-Blocker) bevorzugt; "
+        "Erwägung Lithium-Reduktion/Stop je nach Psychiatrie.\n"
+        "- Psittakose (Vogelkontakt, atyp. Pneumonie): Doxycyclin (Tetrazyklin).\n"
+        "- Kontaktlinsen-Keratitis mit eitrigem Sekret: antipseudomonale topische Fluorchinolone.\n"
+        "- Ältere, gebrechliche, metastasiertes Pankreas-CA, schlechtes PS/Cholestase: häufig 'Best Supportive Care/Hospiz' statt Chemo.\n"
+    )
+
     sys_msg = (
-        "Du bist ein erfahrener Hausarzt in der Schweiz mit Zugriff auf Spezialwissen (Infektiologie, Innere Medizin).\n"
+        "Du bist ein erfahrener Hausarzt in der Schweiz mit Zugriff auf Spezialwissen (Innere Medizin, Infektiologie, Onkologie, Nephrologie).\n"
         + EXTRA_DEPTH_NOTE
-        + "\n"
-        "Aufgabe: Analysiere die klinische Vignette und gib die wahrscheinlichste Ursache/Diagnose und eine geeignete, "
-        "praxisrelevante Therapieempfehlung zurück. Antworte nicht als Frage, sondern als direkte Einschätzung. "
-        "Keine Dosierungen, keine Markennamen. Schweizer/Europäische Guidelines priorisieren.\n"
+        + DECISION_POLICY
+        + KNOWLEDGE_ANCHORS
+        + "Berücksichtige explizit bestehende Medikamente im Text (Medication Reconciliation) und vermeide Dopplungen derselben Klasse; "
+          "formuliere nach Möglichkeit Anpassung/Deeskalation statt erneuter Start.\n"
+        "Aufgabe: Analysiere die Vignette und gib die wahrscheinlichste Ursache/Diagnose und eine geeignete, praxisrelevante "
+        "Therapie zurück. Antworte nicht als Frage, sondern als direkte Einschätzung. Keine Dosierungen, keine Markennamen. "
+        "Schweizer/Europäische Guidelines priorisieren.\n"
         "Antworte ausschliesslich als JSON mit folgenden Feldern:\n"
         "{\n"
-        "  \"antwort_kurz\": \"string\",\n"
-        "  \"diagnose\": \"string\",\n"
+        "  \"antwort_kurz\": \"string\",            \n"
+        "  \"diagnose\": \"string\",                 \n"
         "  \"wahrscheinlichster_erreger\": \"string\",\n"
-        "  \"begruendung\": \"string\",\n"
-        "  \"therapie_empfehlung\": \"string\",\n"
-        "  \"leitlinienhinweis\": \"string\"\n"
+        "  \"begruendung\": \"string\",              \n"
+        "  \"therapie_empfehlung\": \"string\",      \n"
+        "  \"leitlinienhinweis\": \"string\"         \n"
         "}\n"
+        "WICHTIG: 'therapie_empfehlung' enthält mindestens EINEN generischen Wirkstoff/Regimen-Namen ODER 'Best Supportive Care/Hospiz'.\n"
     ).strip()
 
+    # Ein kurzes Few‑Shot, das Lithium‑DI → Amilorid erzwingt (knapp halten, damit Kontext klein bleibt)
+    fewshot_user = {
+        "vignette": (
+            "32-year-old with bipolar disorder recently started lithium; now polyuria/polydipsia. "
+            "Vitals normal. Labs: low urine osmolality, high urine volume, serum Na 145. Other meds: quetiapine."
+        ),
+        "hinweise": "MCQ-Optionen ignorieren; beste Lösung direkt."
+    }
+    fewshot_assistant = {
+        "antwort_kurz": "Nephrogener Diabetes insipidus (lithiumbedingt) – Amilorid (ENaC-Blocker).",
+        "diagnose": "Nephrogener DI durch Lithium",
+        "wahrscheinlichster_erreger": "keine (nicht-infektiös)",
+        "begruendung": "Lithium-Exposition; hohe Urinmenge; niedrige Urin-Osmolalität; Polyurie/Polydipsie.",
+        "therapie_empfehlung": "Amilorid",
+        "leitlinienhinweis": "Diuretika-Kombinationen nur fallweise; Lithium-Anpassung interdisziplinär prüfen."
+    }
+
+    vignette_final, hint_added = _ensure_management_hint(vignette_text)
+
     usr = {
-        "vignette": vignette_text,
+        "vignette": vignette_final,
         "hinweise": "Falls MCQ-Optionen vorhanden sind: ignoriere Buchstaben A–D und gib die beste Lösung direkt aus."
     }
 
-    result = _ask_openai_json(
-        messages=[
-            {"role": "system", "content": sys_msg},
-            {"role": "user", "content": json.dumps(usr, ensure_ascii=False)},
-        ]
-    )
+    # Debug-Ausgaben
+    if DEBUG_PROMPTS:
+        logger.info("Mgmt-Hint: %s", "ANGEHÄNGT" if hint_added else "bereits vorhanden")
+        logger.debug("VIGNETTE_FINAL (%d Zeichen):\n%s", len(vignette_final), vignette_final)
+
+    msgs = [
+        {"role": "system", "content": sys_msg},
+        {"role": "user", "content": json.dumps(fewshot_user, ensure_ascii=False)},
+        {"role": "assistant", "content": json.dumps(fewshot_assistant, ensure_ascii=False)},
+        {"role": "user", "content": json.dumps(usr, ensure_ascii=False)},
+    ]
+
+    if DEBUG_PROMPTS:
+        debug_path = os.path.join(THIS_DIR, "debug_last_prompt.json")
+        with open(debug_path, "w", encoding="utf-8") as f:
+            json.dump(msgs, f, ensure_ascii=False, indent=2)
+        logger.info("📝 Prompt-Dump gespeichert: %s", debug_path)
+
+    result = _ask_openai_json(messages=msgs)
 
     # Minimaler Sanity-Check
     required = [
@@ -476,8 +574,16 @@ def analyze_vignette_and_treatment(vignette_text: str) -> Dict[str, Any]:
     for k in required:
         result.setdefault(k, "noch ausstehend")
 
-    return result
+    # Durchsetzen „genau 1 Vorschlag“ (kein Komma/Semikolon mit Alternativen)
+    if isinstance(result.get("therapie_empfehlung"), str):
+        clean = result["therapie_empfehlung"].strip()
+        # einfache Normalisierung
+        for sep in [";", "/", ","]:
+            if sep in clean and "Best Supportive Care" not in clean and "Hospiz" not in clean:
+                clean = clean.split(sep)[0].strip()
+        result["therapie_empfehlung"] = clean
 
+    return result
 
 # -----------------------------------------------------------------------------
 # Ältere/zusätzliche Generatoren (weiter nutzbar)
@@ -576,7 +682,7 @@ def generate_procedure(beurteilung: str, befunde: str, anamnese: str) -> str:
         + "\n\nBefunde:\n"
         + befunde
         + "\n\nListe stichpunktartig ein empfohlenes Prozedere auf:\n"
-        "- Abgemachte Massnahmen (inkl. Medikation als Substanzklasse/erstlinientaugliche Wirkstoffe; keine Dosierungen)\n"
+        "- Abgemachte Massnahmen (inkl. Medikation mit Substanzklasse und Beispielen lokal eingesetzter Pharmaka)\n"
         "- Verlauf/Kontrollintervall\n"
         "- Vorzeitige Wiedervorstellung (konkrete Warnzeichen)\n"
         "- Weitere Abklärungen bei Ausbleiben der Besserung\n"
