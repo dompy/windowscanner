@@ -1,3 +1,4 @@
+# gpt_logic.py
 """
 Psychologie-fokussierte Logik für den Praxis-Assistenten
 - Saubere Trennung Logik/UI (keine tkinter-Referenzen)
@@ -17,9 +18,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
-
-
 from red_flags_checker import check_red_flags, load_red_flags
+
 
 # ------------------ Logging ------------------
 logging.basicConfig(level=logging.INFO)
@@ -30,13 +30,10 @@ MODEL_DEFAULT = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 from typing import Optional
 from openai import OpenAI
+
 _client: Optional[OpenAI] = None
 
 def _get_openai_client() -> OpenAI:
-    """
-    Erst beim Aufruf prüfen, ob OPENAI_API_KEY vorhanden ist.
-    Verhindert Import-Crash der EXE ohne gesetzten Key.
-    """
     global _client
     if _client is None:
         api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
@@ -44,6 +41,11 @@ def _get_openai_client() -> OpenAI:
             raise EnvironmentError("❌ Umgebungsvariable OPENAI_API_KEY ist nicht gesetzt!")
         _client = OpenAI(api_key=api_key)
     return _client
+
+def reset_openai_client() -> None:
+    """Vergisst den gecachten Client. Beim nächsten Call wird aus der aktuellen ENV neu initialisiert."""
+    global _client
+    _client = None  
 
 
 # ------------------ Pfade & Resolver ------------------
@@ -109,6 +111,67 @@ def _swiss_style_note(humanize: bool = True) -> str:
     base += "keine Floskeln, keine Romane."
     return base
 
+def _fallback_format_anamnese_local(freetext: str, gaptext: str) -> str:
+    """Sehr einfacher Fallback ohne LLM: Bullet-Zeilen glätten."""
+    import re
+    parts = []
+    ft = (freetext or "").strip()
+    if ft:
+        # Kleiner Happen: "gestern geweint" -> "Patient berichtet, gestern geweint zu haben."
+        if not ft.endswith((".", "!", "?")):
+            ft = ft.rstrip() + "."
+        parts.append(ft)
+
+    for raw in (gaptext or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        # "– " oder "- " entfernen
+        line = re.sub(r"^\s*[–-]\s*", "", line)
+        # Endungen wie "? ja"/"? nein" in Klammern
+        line = re.sub(r"\?\s*ja\s*$", " (bejaht).", line)
+        line = re.sub(r"\?\s*nein\s*$", " (verneint).", line)
+        # Falls noch kein Satzende: Punkt
+        if not line.endswith((".", "!", "?")):
+            line += "."
+        parts.append(line)
+    return " ".join(parts).strip()
+
+
+def format_anamnese_fliess_text(freetext: str, gaptext: str) -> str:
+    """
+    Formatiert Freitext + 'Erweiterte Anamnese' (Bullet-Liste) zu EINEM
+    klinischen Kurzabsatz (Schweizer Orthografie, telegraphisch, aber fliessend).
+    """
+    # 1) Versuch: LLM
+    try:
+        sys_msg = (
+            "Du bist erfahrener Psychologe in einer Schweizer Praxis. "
+            "Formuliere aus a) einer kurzen freien Anamnese und b) einer Liste mit Zusatzfragen/-antworten "
+            "(Zeilen beginnen evtl. mit '-' und enden evtl. mit 'ja/nein') EINEN kompakten Fliesstextabsatz. "
+            "Nutze Schweizer Orthografie (ss statt ß), telegraphisch aber gut lesbar. "
+            "Keine Aufzählungspunkte, keine Frageform, keine Diagnosen. "
+            "Beziehe Antworten 'ja/nein' als bejaht/verneint ein. Beginne typisch mit 'Patient berichtet, …' "
+            "oder setze Angaben natürlich zusammen."
+        ).strip()
+        usr = {
+            "freitext": freetext or "",
+            "zusatzfragen_liste": gaptext or "",
+            "hinweis": "Nur EIN Absatz. Kein 'Anamnese:' davor. Keine Bulletpoints."
+        }
+        text = ask_openai(
+            sys_msg + "\n\nDaten:\n" + json.dumps(usr, ensure_ascii=False)
+        )
+        text = (text or "").strip()
+        if text:
+            # Einzeilig machen (falls Modell Absatzumbrüche setzt)
+            return " ".join(x.strip() for x in text.splitlines() if x.strip())
+    except Exception:
+        pass
+
+    # 2) Fallback ohne LLM
+    return _fallback_format_anamnese_local(freetext, gaptext)
+
 
 def _format_full_entries_block(payload: Dict[str, Any]) -> str:
     """Kopierfertiger Block mit allen vier Feldern (Red Flags separat im UI)."""
@@ -148,7 +211,7 @@ def generate_full_entries_german(
         red_flags_list = []
 
     sys_msg = (
-        "Du bist Psychologe in einer Schweizer Praxis (ambulante Erstkonsultation).\n"
+        "Du bist erfahrener Psychologe in einer Schweizer Praxis (ambulante Erstkonsultation).\n"
         "Ziel: Erzeuge vier dokumentationsfertige Felder (Deutsch), direkt kopierbar.\n"
         "WICHTIG:\n"
         "- Nichts erfinden. Wo Angaben fehlen: \"keine Angaben\", \"nicht erhoben\" oder \"noch ausstehend\".\n"
@@ -403,4 +466,5 @@ __all__ = [
     "generate_anamnese_gaptext_german",
     "generate_status_gaptext_german",
     "generate_assessment_and_plan_german",
+    "format_anamnese_fliess_text",   
 ]

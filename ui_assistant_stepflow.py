@@ -1,4 +1,5 @@
-"""Tkinter-UI – Hausarzt-Version (clean)
+# ui_assistant_stepflow.py
+"""Tkinter-UI – Psychologie-Version
 - Fragt beim Start den OPENAI_API_KEY per Dialog ab (maskiert) und speichert ihn prozesslokal; unter Windows optional persistent via setx.
 - In allen Actions (Buttons) Retry-Logik: Fehlt der Key oder ist er verloren gegangen, wird er nachgefordert und der jeweilige Call einmalig erneut ausgeführt.
 - Red Flags werden separat angezeigt (medizinische Regeln bevorzugt).
@@ -15,13 +16,14 @@ from typing import Callable, Optional, Tuple
 
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, simpledialog, ttk
-
+from psy_status_editor import open_status_editor
 from gpt_logic import (
     generate_anamnese_gaptext_german,
     generate_assessment_and_plan_german,
     generate_status_gaptext_german,
     generate_full_entries_german,
     resolve_red_flags_path,
+    format_anamnese_fliess_text,
 )
 
 try:
@@ -33,38 +35,58 @@ except Exception:
 
 # ---------- Utility: API-Key sicherstellen ----------
 
-def ensure_api_key(parent: tk.Tk) -> bool:
-    """Sichert, dass OPENAI_API_KEY vorhanden ist.
-
-    - Fragt bei Bedarf per Dialog ab (maskiert).
-    - Setzt ihn prozesslokal (sofort wirksam) und unter Windows zusätzlich persistent via setx (best effort).
-    - Gibt True zurück, wenn ein Key verfügbar ist, sonst False.
+def ensure_api_key(parent, *, force_prompt: bool = False) -> bool:
     """
-    key = (os.getenv("OPENAI_API_KEY") or "").strip()
-    if key:
+    Stellt sicher, dass OPENAI_API_KEY gesetzt ist.
+    - force_prompt=True: erzwingt Abfrage auch wenn schon ein Key vorhanden ist (zum Erneuern).
+    - Setzt Key prozesslokal und unter Windows optional persistent (setx).
+    - Resettet den gecachten OpenAI-Client (gpt_logic.reset_openai_client), damit der neue Key sofort genutzt wird.
+    """
+    current = (os.getenv("OPENAI_API_KEY") or "").strip()
+
+    if not force_prompt and current:
         return True
 
-    key = simpledialog.askstring(
+    # Dialog (maskiert)
+    from tkinter import simpledialog, messagebox
+    new_key = simpledialog.askstring(
         "OpenAI API Key",
         "Bitte OpenAI API Key eingeben:",
         show="*",
-        parent=parent,
+        parent=parent
     )
-    if not key:
+    if not new_key:
+        if not current:
+            messagebox.showwarning("Fehlender Key", "Ohne OpenAI API Key kann die App nicht arbeiten.")
+            return False
+        # Abbruch, aber alter Key bleibt aktiv
+        return True
+
+    new_key = new_key.strip()
+    if not new_key:
         messagebox.showwarning("Fehlender Key", "Ohne OpenAI API Key kann die App nicht arbeiten.")
         return False
 
-    # Prozesslokal setzen
-    os.environ["OPENAI_API_KEY"] = key
+    # prozesslokal sofort verfügbar
+    os.environ["OPENAI_API_KEY"] = new_key
 
-    # Unter Windows persistent speichern (optional)
+    # Windows: persistent speichern (für nächste Starts)
     try:
         if os.name == "nt":
-            subprocess.run(["setx", "OPENAI_API_KEY", key], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["setx", "OPENAI_API_KEY", new_key], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+    # OpenAI-Client-Cache leeren, damit der neue Key sofort verwendet wird
+    try:
+        from gpt_logic import reset_openai_client  # lazy import, falls Modul noch nicht geladen
+        reset_openai_client()
     except Exception:
         pass
 
     return True
+
 
 
 # ---------- Headless-Smoke-Test (für CI/Actions) ----------
@@ -121,6 +143,12 @@ class ConsultationAssistant:
             relief=[("pressed", "flat"), ("!pressed", "flat")]
         )
 
+        menubar = tk.Menu(self.root)
+        m_settings = tk.Menu(menubar, tearoff=False)
+        m_settings.add_command(label="API-Key ändern …", command=self.on_change_api_key)
+        menubar.add_cascade(label="Einstellungen", menu=m_settings)
+        self.root.config(menu=menubar)
+
         self.fields: dict[str, scrolledtext.ScrolledText] = {}
 
         # Anamnese (frei)
@@ -132,13 +160,13 @@ class ConsultationAssistant:
         self._label("Erweiterte Anamnese")
         self.txt_gap = self._text(height=6)
 
-        # status
+        # Psychostatus
         bar = tk.Frame(self.root, bg="#222")
         bar.pack(fill="x", padx=8, pady=(6, 4))
-        self._button("Status", lambda: self.on_status_gaptext("initial"), parent=bar)
+        self._button("Psychopathologischen Status erheben", self.on_psychostatus, parent=bar)
 
-        self._label("Status (wird überschrieben)")
-        self.fields["Status"] = self._text(height=7)
+        self._label("Status Freitext")
+        self.fields["Status"] = self._text(height=3)
 
         # Einschätzung + Prozedere
         self._button("Einschätzung + Prozedere", self.on_finalize)
@@ -170,7 +198,7 @@ class ConsultationAssistant:
         self._button("Reset", self.reset_all, parent=util, side="left")
 
         self._label("Gesamtausgabe")
-        self.output_full = self._text(height=10)
+        self.output_full = self._text(height=15)
 
     # ---------- UI helpers ----------
     def _label(self, text: str, parent: Optional[tk.Misc] = None, size: int = 10):
@@ -218,8 +246,14 @@ class ConsultationAssistant:
             messagebox.showerror("Fehler", f"{action_name} fehlgeschlagen:\n{e}")
             return None
         except Exception as e:
-            messagebox.showerror("Fehler", f"{action_name} fehlgeschlagen:\n{e}")
-            return None
+            msg = str(e)
+            if "invalid_api_key" in msg.lower() or "authentication" in msg.lower():
+                if ensure_api_key(self.root, force_prompt=True):
+                    try:
+                        return fn()
+                    except Exception as e2:
+                        messagebox.showerror("Fehler", f"{action_name} fehlgeschlagen:\n{e2}")
+                        return None
 
     # ---------- Actions ----------
     def on_gaptext(self):
@@ -263,6 +297,21 @@ class ConsultationAssistant:
             if current:
                 self.fields["Status"].insert(tk.END, "\n\n")
             self.fields["Status"].insert(tk.END, bef_text or "")
+
+    def on_psychostatus(self):
+        anam = self.fields["Anamnese"].get("1.0", tk.END).strip()
+        ext = getattr(self, "txt_gap", None)
+        ext_txt = ext.get("1.0", tk.END).strip() if ext else ""
+        stat = self.fields["Status"].get("1.0", tk.END).strip()
+        ctx = "\n\n".join(x for x in (anam, ext_txt, stat) if x)
+
+        text, _state = open_status_editor(self.root, json_path="psychopathologischer_befund.json", context_text=ctx)
+        if not text:
+            return
+        self.fields["Status"].delete("1.0", tk.END)
+        self.fields["Status"].insert(tk.END, text)
+
+
 
     def on_finalize(self):
         anamnese_final = self.txt_gap.get("1.0", tk.END).strip() or self.fields["Anamnese"].get("1.0", tk.END).strip()
@@ -356,14 +405,30 @@ class ConsultationAssistant:
         self.txt_redflags.configure(state="disabled")
 
     def build_output(self, anamnese: str, status: str, einschätzung: str, prozedere: str):
+        # Anamnese hübsch machen: Freitext + evtl. erweiterte Anamnese (Bullets) -> EIN Absatz
+        gap = getattr(self, "txt_gap", None)
+        gap_text = gap.get("1.0", tk.END).strip() if gap else ""
+        pretty_ana = anamnese or ""
+
+        def _do():
+            return format_anamnese_fliess_text(anamnese, gap_text)
+
+        result = self._call_with_key_retry("Anamnese formatieren", _do)
+        if isinstance(result, str) and result.strip():
+            pretty_ana = result.strip()
+        else:
+            # Offline/Fehler → lokaler Fallback ohne LLM
+            pretty_ana = self._fallback_anamnese_local(anamnese, gap_text)
+
         parts: list[str] = [
-            anamnese or "keine Angaben", "",
-            status or "keine Angaben", "",
+            pretty_ana or "keine Angaben", "",
+            status or "Status: nicht erhoben", "",
             einschätzung or "keine Angaben", "",
             prozedere or "keine Angaben",
         ]
         self.output_full.delete("1.0", tk.END)
         self.output_full.insert(tk.END, "\n".join(parts).strip())
+
 
     def copy_output(self):
         text = self.output_full.get("1.0", tk.END)
@@ -379,7 +444,33 @@ class ConsultationAssistant:
         self.output_full.delete("1.0", tk.END)
         self.set_red_flags([])
 
+    def on_change_api_key(self):
+        if ensure_api_key(self.root, force_prompt=True):
+            messagebox.showinfo("OK", "API-Key wurde aktualisiert.")
+    
+    
+# ---------- Fallback für offline Gebrauch ----------
 
+    def _fallback_anamnese_local(self, freitext: str, gaptext: str) -> str:
+        import re
+        parts = []
+        ft = (freitext or "").strip()
+        if ft:
+            if not ft.endswith((".", "!", "?")):
+                ft = ft.rstrip() + "."
+            parts.append(ft)
+        for raw in (gaptext or "").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            line = re.sub(r"^\s*[–-]\s*", "", line)
+            line = re.sub(r"\?\s*ja\s*$", " (bejaht).", line)
+            line = re.sub(r"\?\s*nein\s*$", " (verneint).", line)
+            if not line.endswith((".", "!", "?")):
+                line += "."
+            parts.append(line)
+        return " ".join(parts).strip()
+            
 def main():
     if "--smoke-test" in sys.argv:
         sys.exit(_smoke_test())
