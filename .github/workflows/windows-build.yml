@@ -52,7 +52,7 @@ jobs:
         run: |
           set OPENAI_API_KEY=
           call start_PraxisAssistantPsych.bat test
-
+          
       - name: Copy launcher BAT
         if: ${{ hashFiles('start_PraxisAssistantPsych.bat') != '' }}
         shell: cmd
