@@ -37,10 +37,8 @@ python ui_assistant_stepflow.py
 1. GitHub → **Actions** → letzter erfolgreicher Run → **Artifacts** → `PraxisAssistantPsych` (ZIP) herunterladen.
 2. ZIP entpacken, dann:
 
-   * **start\_PraxisAssistantPsych.bat** ausführen → fragt 1× nach **OPENAI\_API\_KEY** und setzt ihn als Benutzer-Variable.
-   * **PraxisAssistantPsych.exe** starten.
-
-> Hinweis: Ohne BAT kann der Key auch manuell gesetzt werden (Windows „Umgebungsvariablen für Ihr Konto“ → `OPENAI_API_KEY`).
+   *  **PraxisAssistantPsych.exe** starten → fragt 1× nach **OPENAI\_API\_KEY** und setzt ihn als Benutzer-Variable.
+   *  Hinweis: Windows „Umgebungsvariablen für Ihr Konto“ → `OPENAI_API_KEY`.
 
 ---
 
@@ -63,7 +61,6 @@ python ui_assistant_stepflow.py
 * `red_flags_checker.py` – Matching-Logik
 * `psych_red_flags.json` / `red_flags.json` – Regeln für Warnhinweise
 * `requirements_psychology.txt` – minimale Abhängigkeiten (Windows-Build)
-* `start_PraxisAssistantPsych.bat` – optionaler Windows-Launcher (API-Key-Abfrage)
 
 ---
 
