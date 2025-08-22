@@ -29,14 +29,14 @@ logger = logging.getLogger(__name__)
 
 # Globaler Stil (kann in einzelnen Funktionen ergänzt werden)
 PROMPT_PREFIX = (
-    "Beziehe dich auf anerkannte medizinische Guidelines (Schweiz/Europa priorisiert; danach UK/US). "
+    "Beziehe dich auf akuelle, anerkannte medizinische Guidelines (Schweiz/Europa priorisiert; danach UK/US). "
     "Antworte bevorzugt stichpunktartig (ausser explizit Sätze gefordert), präzise, kurz, praxisnah und exakt (Schweiz). "
     "Schweizer Orthografie (ss statt ß). "
 )
 
 # Hybrid-Kompetenz: Hausarzt + Spezialwissen bei Bedarf (mehr Tiefe, aber praxisnah)
 EXTRA_DEPTH_NOTE = (
-    "Du bist ein erfahrener Hausarzt in der Schweiz. Ziehe bei Bedarf vertieftes Spezialistenwissen (Innere Medizin, "
+    "Du bist ein erfahrener Hausarzt in der Schweiz. Ziehe vertieftes Spezialistenwissen (Innere Medizin, "
     "Infektiologie, Pneumologie, Kardiologie, Nephrologie, Hepatologie, Gynäkologie, Urologie, Endokrinologie, Chirurgie, Kardiologie, Onkologie, Psychiatrie usw.) hinzu, priorisiere aber stets die hausärztliche "
     "Praxisrelevanz. Geh noch eine Ebene tiefer, wo möglich:\n"
     "- Bei Infekten/entzündlichen Zuständen: nenne den wahrscheinlichsten Erreger/Mechanismus.\n"
@@ -454,6 +454,73 @@ def generate_assessment_and_plan_german(
     # Red Flags NICHT einbauen (werden im UI separat gezeigt)
     return beurteilung, prozedere
 
+def generate_confirmatory_tests_for_differentials(
+    anamnese_final: str,
+    befunde_final: str,
+    beurteilung_text: str,
+    humanize: bool = True,
+) -> Dict[str, Any]:
+    """
+    Liefert pro Verdachtsdiagnose/DD eine priorisierte Diagnostik-Liste:
+    - bedside/status (einfach, sofort)
+    - labor/poct (grundversorgungstauglich)
+    - bildgebung (falls nötig)
+    - spezifisch (pathognomonisch/entscheidend)
+    Markiert low-overhead und entscheidend. Antwort als JSON.
+    """
+    note = _swiss_style_note(humanize)
+    sys_msg = (
+        "Du bist ein erfahrener Hausarzt in der Schweiz. "
+        "Ziel: Für die genannten Diagnosen die sinnvollste Diagnostik vorschlagen, um sie zu bestätigen/auszuschliessen. "
+        "Priorisiere Grundversorgung (low overhead) vor Spezialdiagnostik. Schweizer/Europäische Guidelines."
+        "\nAntwort NUR als JSON:\n"
+        "{"
+        "  \"diagnostik\": ["
+        "    {"
+        "      \"diagnose\": \"string\","
+        "      \"bedside\": [\"...\"],"
+        "      \"labor_poct\": [\"...\"],"
+        "      \"bildgebung\": [\"...\"],"
+        "      \"spezifisch\": [\"...\"],"
+        "      \"entscheidend\": [\"...\"],"
+        "      \"hinweise\": \"kurz\""
+        "    }"
+        "  ]"
+        "}"
+    ).strip()
+
+    usr = {
+        "anamnese": anamnese_final,
+        "befunde": befunde_final,
+        "beurteilung": beurteilung_text
+    }
+
+    payload = _ask_openai_json(
+        messages=[
+            {"role": "system", "content": sys_msg + "\n" + note},
+            {"role": "user", "content": json.dumps(usr, ensure_ascii=False)},
+        ]
+    )
+
+    # Fallback-Form
+    if not isinstance(payload, dict) or "diagnostik" not in payload:
+        payload = {"diagnostik": []}
+    return payload
+
+def render_diagnostics_text(diag_json: Dict[str, Any]) -> str:
+    lines: List[str] = []
+    for item in diag_json.get("diagnostik", []):
+        d = item.get("diagnose", "Diagnose")
+        lines.append(f"{d}:")
+        if item.get("bedside"):     lines.append("  - Bedside/Status: " + "; ".join(item["bedside"]))
+        if item.get("labor_poct"):  lines.append("  - Labor/POCT: " + "; ".join(item["labor_poct"]))
+        if item.get("bildgebung"):  lines.append("  - Bildgebung: " + "; ".join(item["bildgebung"]))
+        if item.get("spezifisch"):  lines.append("  - Spezifisch: " + "; ".join(item["spezifisch"]))
+        if item.get("entscheidend"):lines.append("  - Entscheidend: " + "; ".join(item["entscheidend"]))
+        if item.get("hinweise"):    lines.append("  - Hinweis: " + item["hinweise"])
+        lines.append("")
+    return "\n".join(lines).strip()
+
 
 # -----------------------------------------------------------------------------
 # Zusatz: Vignetten/MCQ-Analysator (direkte Antwort + Therapie)
@@ -472,58 +539,52 @@ def _ensure_management_hint(text: str) -> tuple[str, bool]:
 
 
 
-def analyze_vignette_and_treatment(vignette_text: str) -> Dict[str, Any]:
+def analyze_vignette_and_treatment(
+    vignette_text: str,
+    options: Optional[List[str]] = None
+) -> Dict[str, Any]:
     """
     Analysiert klinische Vignetten/MCQs und liefert:
       - wahrscheinlichste Diagnose/Ursache,
-      - mindestens EIN erstlinientaugliches Medikament/Regimen (oder 'Best Supportive Care/Hospiz'),
+      - GENAU EINEN erstlinientauglichen generischen Wirkstoff/Regimen (oder 'Best Supportive Care/Hospiz'),
       - Begründung.
+    Wenn 'options' übergeben wird, MUSS 'therapie_empfehlung' exakt einer Option entsprechen.
     Keine Dosierungen/Markennamen. CH/EU-Guidelines priorisieren.
     """
     DECISION_POLICY = (
-        "Entscheidungs-Policy:\n"
-        "- Gib mindestens EINEN Vorschlag aus: entweder 1 generischer Wirkstoff/Regimenname ODER 'Best Supportive Care/Hospiz'.\n"
-        "- Wähle anhand Indikation, Performance-Status (aus Text ableitbar), Organfunktion (Labore) und Patientenziel.\n"
-        "- Medication Reconciliation: Starte keine Klasse, die bereits läuft; formuliere stattdessen Anpassung/Deeskalation, falls passend.\n"
+        "Policy:\n"
+        "- Gib GENAU EINEN Vorschlag aus (ein generischer Wirkstoff/Regimenname) ODER 'Best Supportive Care/Hospiz'.\n"
+        "- Wenn eine Optionsliste übergeben wurde, MUSST du eine Option daraus wählen (exakter Texttreffer).\n"
+        "- Beziehe Indikation, Performance-Status, Organfunktion und Patientenziel ein.\n"
+        "- Medication Reconciliation: starte keine bereits laufende Klasse; formuliere ggf. Anpassung/Deeskalation.\n"
     )
 
     KNOWLEDGE_ANCHORS = (
-        "Knowledge-Anker (hochgewichtet, kurz):\n"
-        "- Lithium-assoziierte Polyurie/Polydipsie, hohe Urinmenge, niedrige Urin-Osmolalität: nephrogener DI → Amilorid (ENaC-Blocker) bevorzugt; "
-        "Erwägung Lithium-Reduktion/Stop je nach Psychiatrie.\n"
-        "- Psittakose (Vogelkontakt, atyp. Pneumonie): Doxycyclin (Tetrazyklin).\n"
-        "- Kontaktlinsen-Keratitis mit eitrigem Sekret: antipseudomonale topische Fluorchinolone.\n"
-        "- Ältere, gebrechliche, metastasiertes Pankreas-CA, schlechtes PS/Cholestase: häufig 'Best Supportive Care/Hospiz' statt Chemo.\n"
+        "Kurz-Anker (hochgewichten, falls passend):\n"
+        "- Bronchiektasen/strukturelle Lungenerkrankung, grünliches Sputum, ICU oder Gram-negative Erreger: "
+        "Pseudomonas-Risiko → antipseudomonales β-Laktam (z. B. Piperacillin/Tazobactam).\n"
+        "- Psittakose (Vogelkontakt, atypische Pneumonie): Doxycyclin.\n"
+        "- Lithium → nephrogener DI: Amilorid (ENaC-Blocker).\n"
+        "- Gebrechlich, metastasiert, schlechtes PS: häufig Supportive Care/Hospiz statt Chemo.\n"
     )
 
     sys_msg = (
-        "Du bist ein erfahrener Hausarzt in der Schweiz mit Zugriff auf Spezialwissen (Innere Medizin, Infektiologie, Onkologie, Nephrologie).\n"
-        + EXTRA_DEPTH_NOTE
-        + DECISION_POLICY
-        + KNOWLEDGE_ANCHORS
-        + "Berücksichtige explizit bestehende Medikamente im Text (Medication Reconciliation) und vermeide Dopplungen derselben Klasse; "
-          "formuliere nach Möglichkeit Anpassung/Deeskalation statt erneuter Start.\n"
-        "Aufgabe: Analysiere die Vignette und gib die wahrscheinlichste Ursache/Diagnose und eine geeignete, praxisrelevante "
-        "Therapie zurück. Antworte nicht als Frage, sondern als direkte Einschätzung. Keine Dosierungen, keine Markennamen. "
-        "Schweizer/Europäische Guidelines priorisieren.\n"
-        "Antworte ausschliesslich als JSON mit folgenden Feldern:\n"
-        "{\n"
-        "  \"antwort_kurz\": \"string\",            \n"
-        "  \"diagnose\": \"string\",                 \n"
-        "  \"wahrscheinlichster_erreger\": \"string\",\n"
-        "  \"begruendung\": \"string\",              \n"
-        "  \"therapie_empfehlung\": \"string\",      \n"
-        "  \"leitlinienhinweis\": \"string\"         \n"
-        "}\n"
-        "WICHTIG: 'therapie_empfehlung' enthält mindestens EINEN generischen Wirkstoff/Regimen-Namen ODER 'Best Supportive Care/Hospiz'.\n"
+        "Du bist ein erfahrener Hausarzt in der Schweiz mit Zugriff auf Spezialwissen. "
+        "Antworte präzise, knapp, leitliniennah (CH/EU).\n"
+        + DECISION_POLICY + KNOWLEDGE_ANCHORS +
+        "Gib keine Dosierungen/Markennamen an.\n"
+        "Antworte ausschliesslich als JSON mit Feldern: "
+        "{'antwort_kurz','diagnose','wahrscheinlichster_erreger','begruendung','therapie_empfehlung','leitlinienhinweis'}.\n"
+        "Wenn Optionen übergeben wurden, muss 'therapie_empfehlung' EXAKT einer Option entsprechen.\n"
     ).strip()
 
-    # Ein kurzes Few‑Shot, das Lithium‑DI → Amilorid erzwingt (knapp halten, damit Kontext klein bleibt)
+    # Few-shot (Lithium-DI → Amilorid)
     fewshot_user = {
         "vignette": (
             "32-year-old with bipolar disorder recently started lithium; now polyuria/polydipsia. "
             "Vitals normal. Labs: low urine osmolality, high urine volume, serum Na 145. Other meds: quetiapine."
         ),
+        "options": [],
         "hinweise": "MCQ-Optionen ignorieren; beste Lösung direkt."
     }
     fewshot_assistant = {
@@ -532,17 +593,24 @@ def analyze_vignette_and_treatment(vignette_text: str) -> Dict[str, Any]:
         "wahrscheinlichster_erreger": "keine (nicht-infektiös)",
         "begruendung": "Lithium-Exposition; hohe Urinmenge; niedrige Urin-Osmolalität; Polyurie/Polydipsie.",
         "therapie_empfehlung": "Amilorid",
-        "leitlinienhinweis": "Diuretika-Kombinationen nur fallweise; Lithium-Anpassung interdisziplinär prüfen."
+        "leitlinienhinweis": "Lithium-Anpassung interdisziplinär prüfen; Diuretika-Kombinationen nur fallweise."
     }
 
+    # Management-Hint sicher anhängen
     vignette_final, hint_added = _ensure_management_hint(vignette_text)
+
+    # Optionen (falls vorhanden) normalisieren & loggen
+    if options:
+        options = [o.strip() for o in options if o and o.strip()]
+        if DEBUG_PROMPTS:
+            logger.info("MCQ-Optionen (%d): %s", len(options), "; ".join(options))
 
     usr = {
         "vignette": vignette_final,
-        "hinweise": "Falls MCQ-Optionen vorhanden sind: ignoriere Buchstaben A–D und gib die beste Lösung direkt aus."
+        "options": options or [],
+        "hinweise": "Ignoriere A–D Buchstaben; wähle bei vorhandenen Optionen exakt eine davon."
     }
 
-    # Debug-Ausgaben
     if DEBUG_PROMPTS:
         logger.info("Mgmt-Hint: %s", "ANGEHÄNGT" if hint_added else "bereits vorhanden")
         logger.debug("VIGNETTE_FINAL (%d Zeichen):\n%s", len(vignette_final), vignette_final)
@@ -560,9 +628,10 @@ def analyze_vignette_and_treatment(vignette_text: str) -> Dict[str, Any]:
             json.dump(msgs, f, ensure_ascii=False, indent=2)
         logger.info("📝 Prompt-Dump gespeichert: %s", debug_path)
 
-    result = _ask_openai_json(messages=msgs)
+    # gezielt deterministischer
+    result = _ask_openai_json(messages=msgs, temperature=0.1)
 
-    # Minimaler Sanity-Check
+    # Sanity-Check der Felder
     required = [
         "antwort_kurz",
         "diagnose",
@@ -574,10 +643,19 @@ def analyze_vignette_and_treatment(vignette_text: str) -> Dict[str, Any]:
     for k in required:
         result.setdefault(k, "noch ausstehend")
 
-    # Durchsetzen „genau 1 Vorschlag“ (kein Komma/Semikolon mit Alternativen)
+    # Falls Optionen übergeben wurden: erzwinge Optionstreue
+    if options and isinstance(result.get("therapie_empfehlung"), str):
+        choice = result["therapie_empfehlung"].strip()
+        if choice not in options:
+            # tolerante Zuordnung: Substring-Match
+            for opt in options:
+                if opt.lower() in choice.lower() or choice.lower() in opt.lower():
+                    result["therapie_empfehlung"] = opt
+                    break
+
+    # „nur ein Vorschlag“ absichern (Alternativen abschneiden)
     if isinstance(result.get("therapie_empfehlung"), str):
         clean = result["therapie_empfehlung"].strip()
-        # einfache Normalisierung
         for sep in [";", "/", ","]:
             if sep in clean and "Best Supportive Care" not in clean and "Hospiz" not in clean:
                 clean = clean.split(sep)[0].strip()

@@ -2,7 +2,7 @@
 
 import os
 import tkinter as tk
-from gpt_logic import generate_befunde_gaptext_german
+from gpt_logic import generate_befunde_gaptext_german, generate_confirmatory_tests_for_differentials, render_diagnostics_text
 from tkinter import scrolledtext, messagebox
 
 # Wir nutzen NUR das Tool – keine Word-Integration
@@ -63,6 +63,9 @@ class ConsultationAssistant:
 
         tk.Label(right, text="Prozedere", fg="white", bg="#222", anchor="w").pack(fill="x")
         self.fields["Prozedere"] = self._text(parent=right, height=8)
+
+        self._label("Diagnostik (Bestätigen/Ausschliessen)")
+        self.fields["Diagnostik"] = self._text(height=8)
 
         # Warnfeld (Red Flags)
         self._label("⚠️ Red Flags (Info, nicht in den Feldern)")
@@ -153,6 +156,10 @@ class ConsultationAssistant:
             return
         try:
             beurteilung, prozedere = generate_assessment_and_plan_german(anamnese_final, befunde_final)
+            diag_json = generate_confirmatory_tests_for_differentials(anamnese_final, befunde_final, beurteilung)
+            diag_text = render_diagnostics_text(diag_json)
+            self.fields["Diagnostik"].delete("1.0", tk.END)
+            self.fields["Diagnostik"].insert(tk.END, diag_text or "")            
         except Exception as e:
             messagebox.showerror("Fehler", f"Finalisierung fehlgeschlagen:\n{e}")
             return
