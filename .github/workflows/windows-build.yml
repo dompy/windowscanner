@@ -47,11 +47,11 @@ jobs:
           dist\PraxisAssistantPsych.exe --smoke-test > smoke.txt
           type smoke.txt
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: PraxisAssistantPsych
-        path: dist/PraxisAssistantPsych.exe
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PraxisAssistantPsych
+          path: dist/PraxisAssistantPsych.exe
 
   attach-to-release:
     needs: build-windows
