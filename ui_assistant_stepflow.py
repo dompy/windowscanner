@@ -3,10 +3,9 @@ import tkinter as tk
 from tkinter import scrolledtext, messagebox
 
 def _smoke_test() -> int:
-    """Startet keine GUI. Prüft nur, ob EXE & Ressourcen grundsätzlich laufen."""
     try:
         from gpt_logic import resolve_red_flags_path
-        p = resolve_red_flags_path(prefer_psych=True)  # oder False im Hausarzt-Branch
+        p = resolve_red_flags_path(prefer_psych=False)
         print(json.dumps({
             "ok": True,
             "platform": platform.platform(),
@@ -270,7 +269,7 @@ class ConsultationAssistant:
 
 def main():
     if "--smoke-test" in sys.argv:
-        sys.exit(_smoke_test())  # sofort beenden, keine GUI
+        sys.exit(_smoke_test())
     root = tk.Tk()
     app = ConsultationAssistant(root)
     root.mainloop()

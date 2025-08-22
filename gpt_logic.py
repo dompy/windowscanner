@@ -26,16 +26,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ------------------ Config & Client ------------------
-
-_client: Optional[OpenAI] = None
-
 MODEL_DEFAULT = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise EnvironmentError("❌ Umgebungsvariable OPENAI_API_KEY ist nicht gesetzt!")
-
-client = OpenAI(api_key=api_key)
+from typing import Optional
+from openai import OpenAI
+_client: Optional[OpenAI] = None
 
 def _get_openai_client() -> OpenAI:
     """
@@ -49,6 +44,7 @@ def _get_openai_client() -> OpenAI:
             raise EnvironmentError("❌ Umgebungsvariable OPENAI_API_KEY ist nicht gesetzt!")
         _client = OpenAI(api_key=api_key)
     return _client
+
 
 # ------------------ Pfade & Resolver ------------------
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -100,8 +96,8 @@ def _ask_openai_json(*, messages: List[Dict[str, str]], model: str = MODEL_DEFAU
     try:
         return json.loads(content)
     except json.JSONDecodeError:
-        logger.warning("JSON-Decode fehlgeschlagen, roher Text wird zurückgegeben")
         return {"raw_text": content}
+
 
 def _swiss_style_note(humanize: bool = True) -> str:
     base = (
