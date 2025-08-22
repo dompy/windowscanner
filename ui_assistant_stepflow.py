@@ -16,6 +16,7 @@ from typing import Callable, Optional, Tuple
 
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, simpledialog, ttk
+from tkinter import font as tkfont 
 from psy_status_editor import open_status_editor
 from gpt_logic import (
     generate_anamnese_gaptext_german,
@@ -129,6 +130,9 @@ class ConsultationAssistant:
         except Exception:
             pass
 
+        self.text_font = tkfont.Font(family="Arial", size=16)  # zentrale Textschrift
+
+
         self.style.configure(
             "Primary.TButton",
             padding=(10, 4),
@@ -150,6 +154,19 @@ class ConsultationAssistant:
         self.root.config(menu=menubar)
 
         self.fields: dict[str, scrolledtext.ScrolledText] = {}
+
+        m_view = tk.Menu(menubar, tearoff=False)
+        m_view.add_command(label="Schrift grösser", command=lambda: self._change_text_font(+1))
+        m_view.add_command(label="Schrift kleiner", command=lambda: self._change_text_font(-1))
+        m_view.add_command(label="Schrift zurücksetzen", command=lambda: self._set_text_font(12))
+        menubar.add_cascade(label="Ansicht", menu=m_view)
+
+        # praktische Shortcuts
+        self.root.bind("<Control-plus>",  lambda e: self._change_text_font(+1))
+        self.root.bind("<Control-KP_Add>",lambda e: self._change_text_font(+1))  # Numpad +
+        self.root.bind("<Control-minus>", lambda e: self._change_text_font(-1))
+        self.root.bind("<Control-KP_Subtract>", lambda e: self._change_text_font(-1))
+        self.root.bind("<Control-0>",     lambda e: self._set_text_font(12))
 
         # Anamnese (frei)
         self._label("Anamnese")
@@ -179,11 +196,10 @@ class ConsultationAssistant:
         right.pack(side="left", fill="both", expand=True, padx=(4, 0))
 
         self._label("Einschätzung", parent=left)
-        self.fields["Einschätzung"] = self._text(parent=left, height=8)
+        self.fields["Einschätzung"] = self._text(parent=left, height=8, expand=True)   
 
         self._label("Empfohlenes Prozedere", parent=right)
-        self.fields["Prozedere"] = self._text(parent=right, height=8)
-
+        self.fields["Prozedere"] = self._text(parent=right, height=8, expand=True)     
 
         # Red Flags
         self._label("⚠️ Red Flags (Info, nicht in den Feldern)")
@@ -198,10 +214,10 @@ class ConsultationAssistant:
         self._button("Reset", self.reset_all, parent=util, side="left")
 
         self._label("Gesamtausgabe")
-        self.output_full = self._text(height=15)
+        self.output_full = self._text(height=15, expand=True)
 
     # ---------- UI helpers ----------
-    def _label(self, text: str, parent: Optional[tk.Misc] = None, size: int = 10):
+    def _label(self, text: str, parent: Optional[tk.Misc] = None, size: int = 16):
         parent = parent or self.root
         tk.Label(
             parent, text=text, fg="white", bg="#222", anchor="w",
@@ -209,11 +225,25 @@ class ConsultationAssistant:
         ).pack(fill="x", padx=8 if parent is self.root else 0, pady=(8, 0))
 
 
-    def _text(self, height=6, parent: Optional[tk.Misc] = None) -> scrolledtext.ScrolledText:
+    def _text(self, height=6, parent: Optional[tk.Misc] = None, expand: bool = False) -> scrolledtext.ScrolledText:
         parent = parent or self.root
-        t = scrolledtext.ScrolledText(parent, height=height, wrap=tk.WORD, bg="#111", fg="white", insertbackground="white")
-        t.pack(fill="both", expand=False, padx=8, pady=(4, 4))
+        t = scrolledtext.ScrolledText(
+            parent, height=height, wrap=tk.WORD,
+            bg="#111", fg="white", insertbackground="white",
+            font=self.text_font
+        )
+        t.pack(fill="both", expand=expand, padx=8, pady=(4, 4))  # ⬅️ expand nutzen
         return t
+
+    def _change_text_font(self, delta: int):
+        size = int(self.text_font.cget("size")) + delta
+        size = max(8, min(28, size))  # Grenzen
+        self.text_font.configure(size=size)
+
+    def _set_text_font(self, size: int):
+        size = max(8, min(28, int(size)))
+        self.text_font.configure(size=size)
+
 
     def _button(self, label: str, cmd: Callable[[], None],
                 parent: Optional[tk.Misc] = None, side: Optional[str] = None):

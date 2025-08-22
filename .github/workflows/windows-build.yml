@@ -39,6 +39,7 @@ jobs:
             %GITHUB_WORKSPACE%\ui_assistant_stepflow.py ^
             --add-data "%GITHUB_WORKSPACE%\red_flags.json;." ^
             --add-data "%GITHUB_WORKSPACE%\psych_red_flags.json;."
+            --add-data "%GITHUB_WORKSPACE%\psychopathologischer_befund.json;."
 
       - name: Smoke test EXE (headless)
         shell: cmd

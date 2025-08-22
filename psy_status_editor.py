@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import tkinter as tk
 from tkinter import ttk, messagebox
+from tkinter import font as tkfont 
 
 # -------------------------------------------------------------
 # JSON-Katalog laden & normalisieren
@@ -303,6 +304,12 @@ class PsyStatusEditor(tk.Toplevel):
 
         self.katalog = katalog
         self.state: Dict[str, ChapterState] = {k: ChapterState(k) for k in katalog.keys()}
+
+        try:
+            default_font = tkfont.nametofont("TkTextFont")
+            self.preview.configure(font=default_font)
+        except Exception:
+            pass
 
         # Layout
         self.columnconfigure(0, weight=1)
