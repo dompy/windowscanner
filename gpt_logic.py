@@ -26,7 +26,7 @@ from red_flags_checker import check_red_flags, load_red_flags
 # Kanonische Top-Level-Überschriften (für UI/Endausgabe)
 TOP_HEADS = [
     "Eintrittssituation",
-    "Aktuelle Anamnese (inkl. Suizidalität, falls erwähnt)",
+    "Aktuelle Anamnese",
     "Hintergrundanamnese",
     "Soziale Anamnese",
     "Familiäre Anamnese",
@@ -67,6 +67,10 @@ logger = logging.getLogger(__name__)
 MODEL_DEFAULT = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 _client: Optional[OpenAI] = None
+
+HEADINGS_INLINE = False   # False => "Überschrift\nInhalt", True => "Überschrift   Inhalt"
+HEADING_SPACES = 3        # nur relevant, wenn HEADINGS_INLINE=True
+
 
 def _get_openai_client() -> OpenAI:
     global _client
@@ -150,6 +154,198 @@ def _rectify_assessment_vs_plan(einsch: str, proz: str) -> tuple[str, str]:
     new_proz   = "\n".join(kept).strip()
     return new_einsch, new_proz
 
+def _extract_block(text: str, head: str) -> str:
+    """Extrahiert den Block nach einer Top-Überschrift bis zur nächsten Top-Überschrift."""
+    if not text:
+        return ""
+    heads = _top_heads_regex()
+    pat_head = rf"(?im)^\s*({head})\s*:?\s*$"
+    pat_any  = rf"(?im)^\s*(?:{heads})\s*:?\s*$"
+
+    s = text.replace("\r\n", "\n")
+    m = re.search(pat_head, s)
+    if not m:
+        return ""
+    start = m.end()
+    m2 = re.search(pat_any, s[start:])
+    end = start + (m2.start() if m2 else len(s))
+    return s[start:end].strip()
+
+
+def categorize_anamnese_with_llm(free_text: str, gap_text: str = "", status_hint: str = "") -> Dict[str, str]:
+    """
+    Nutzt das LLM, um Freitext + evtl. Gap-Antworten in die 5 Abschnitte zu verteilen und paraphrasiert zu formulieren.
+    Status wird nur als Kontext verwendet (keine 1:1-Übernahme in die Anamnese).
+    Rückgabe-Keys: eintritt, aktuell, hintergrund, sozial, familiaer
+    """
+    sys_msg = (
+        "Du bist leitender Psychiater in einer Schweizer Ambulanz. "
+        "Aufgabe: Zerlege den Patiententext in fünf Anamneseabschnitte und paraphrasiere klinisch präzise, "
+        "in vollständigen Sätzen, ohne Fragen/Listenstil. "
+        "Verwende Schweizer Orthografie (ss). "
+        "Nutze Angaben aus dem Psychostatus nur zur Kontextualisierung (z. B. Verlauf, Glaubhaftigkeit), "
+        "übernimm aber keine Status-Beobachtungen in die Anamnese. "
+        "Fehlende Informationen -> 'keine Angaben'."
+    )
+
+    user_payload = {
+        "freitext": _strip_question_lines(free_text or ""),
+        "gap_antworten": _strip_question_lines(gap_text or ""),
+        "status_kontext": (status_hint or ""),
+        "abschnitte": [
+            "Eintrittssituation",
+            "Aktuelle Anamnese (inkl. Suizidalität, falls erwähnt)",
+            "Hintergrundanamnese",
+            "Soziale Anamnese",
+            "Familiäre Anamnese",
+        ],
+        "form": "volle Sätze, keine Bulletpoints, klinisch neutral",
+        "ausgabe_json_schema": {
+            "eintritt": "string",
+            "aktuell": "string",
+            "hintergrund": "string",
+            "sozial": "string",
+            "familiaer": "string",
+        }
+    }
+
+    result = _ask_openai_json(
+        messages=[
+            {"role": "system", "content": sys_msg},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ]
+    )
+
+    if not isinstance(result, dict):
+        result = {}
+
+    # Reinigung + Defaults
+    def clean(x: str) -> str:
+        x = (x or "").strip()
+        x = re.sub(r"\s+\n", "\n", x)
+        return x if x else "keine Angaben"
+
+    return {
+        "eintritt":   clean(result.get("eintritt", "")),
+        "aktuell":    clean(result.get("aktuell", "")),
+        "hintergrund":clean(result.get("hintergrund", "")),
+        "sozial":     clean(result.get("sozial", "")),
+        "familiaer":  clean(result.get("familiaer", "")),
+    }
+
+
+def _build_anamnese_from_sections(sec: Dict[str, str]) -> str:
+    """Baut den finalen Anamnese-Block mit Überschriften auf separater Zeile."""
+    parts = [
+        "Eintrittssituation\n" + (sec.get("eintritt") or "keine Angaben"),
+        "Aktuelle Anamnese (inkl. Suizidalität, falls erwähnt)\n" + (sec.get("aktuell") or "keine Angaben"),
+        "Hintergrundanamnese\n" + (sec.get("hintergrund") or "keine Angaben"),
+        "Soziale Anamnese\n" + (sec.get("sozial") or "keine Angaben"),
+        "Familiäre Anamnese\n" + (sec.get("familiaer") or "keine Angaben"),
+    ]
+    return "\n\n".join(parts).strip()
+
+
+# --- Prozedere: Gruppierung & Planbau ---------------------------------------
+
+SECTION_ORDER = [
+    "Setting & Ziele",
+    "Psychoedukation",
+    "Aktivitätsaufbau",
+    "Schlaf & Rhythmus",
+    "Angst/Skills/Exposition",
+    "Substanzkonsum",
+    "Sicherheit/Krisenplan",
+    "Einbezug/Koordination",
+    "Diagnostik/Screenings",
+    "Verlauf/Monitoring",
+    "Arbeit & Soziales",
+    "Medikation (Koordination)",
+]
+
+SECTION_PATTERNS = {
+    "Setting & Ziele":           r"\b(setting|ziel|vereinbar|bündnis|allianz)\b",
+    "Psychoedukation":           r"\b(psychoeduk)\w*\b",
+    "Aktivitätsaufbau":          r"\b(aktivitäts|aktivierung|verhaltensaktiv|angenehme aktiv)\b",
+    "Schlaf & Rhythmus":         r"\b(schlaf|hygiene|rhythmus|aufstehzeit|abendroutine)\b",
+    "Angst/Skills/Exposition":   r"\b(angst|exposition|skills?|atmen|atem|bodyscan|entspann|umstrukturier|kognitiv)\b",
+    "Substanzkonsum":            r"\b(alkohol|substanz|konsum|abstinenz|reduktion|trinken)\b",
+    "Sicherheit/Krisenplan":     r"\b(krisen|sicherheits?|notfall|frühwarn|suizid|fremdgefähr)\b",
+    "Einbezug/Koordination":     r"\b(einbezug|angehörig|hausarzt|psychiatr|koordination)\b",
+    "Diagnostik/Screenings":     r"\b(screen|diagnostik|fragebogen|phq|gad|test)\b",
+    "Verlauf/Monitoring":        r"\b(verlauf|monitor|skala|tagebuch|hausaufgabe|termin|review|evaluation)\b",
+    "Arbeit & Soziales":         r"\b(arbeit|job|krankmeldung|iv|re\-?integration|sozial)\b",
+    "Medikation (Koordination)": r"\b(medik|ärzt|somat|apothek)\b",
+}
+
+def _is_already_grouped(proz: str) -> bool:
+    if not proz:
+        return False
+    # Mind. zwei eingerückte Unterbullets -> bereits gruppiert
+    return sum(1 for ln in proz.splitlines() if re.match(r"^\s{2,}-\s+", ln.strip(" "))) >= 2
+
+def _ensure_grouped_plan(proz: str) -> str:
+    """
+    Wenn prozedere_text keine gruppierte Struktur hat, ordnet diese Funktion
+    die Bullets anhand von Keywords den Standardabschnitten zu und baut
+    einen gut lesbaren, professionellen Behandlungsplan (Bulletabschnitte + Unterbullets).
+    """
+    if not proz:
+        return ""
+    if _is_already_grouped(proz):
+        return proz
+
+    proz = re.sub(r"(?im)^\s*behandlungsplan\s*$", "", proz).strip()
+
+    # Nur Bulletzeilen extrahieren
+    bullets = []
+    for ln in proz.replace("\r\n", "\n").split("\n"):
+        m = re.match(r"^\s*[-•–]\s+(.*\S)\s*$", ln)
+        if m:
+            bullets.append(m.group(1).strip())
+
+    if not bullets:
+        return proz.strip()
+
+    # Routing
+    buckets = {sec: [] for sec in SECTION_ORDER}
+    other = []
+    for item in bullets:
+        placed = False
+        for sec, pat in SECTION_PATTERNS.items():
+            if re.search(pat, item, flags=re.IGNORECASE):
+                if item.lower() != sec.lower():
+                    buckets[sec].append(item)
+                placed = True
+                break
+        if not placed:
+            other.append(item)
+
+    if other:
+        # „Sonstiges“ an sinnvolle Abschnitte anhängen, bevorzugt Setting/Verlauf
+        for x in other:
+            tgt = "Verlauf/Monitoring" if re.search(r"\b(termin|kontroll|review|evaluation)\b", x, re.IGNORECASE) else "Setting & Ziele"
+            buckets[tgt].append(x)
+
+    # Duplikate entfernen & sauberen Plan bauen
+    out_lines = []
+    for sec in SECTION_ORDER:
+        items = []
+        seen = set()
+        for it in buckets[sec]:
+            t = it.strip().rstrip(".")
+            if not t or t.lower() == sec.lower():
+                continue
+            if t in seen:
+                continue
+            seen.add(t); items.append(t)
+
+        if items:
+            out_lines.append(f"- {sec}")
+            for it in items:
+                out_lines.append(f"  - {it}")
+    return "\n".join(out_lines).strip()
+
 
 def _split_snippets(text: str) -> list[str]:
     """Zerschneidet freien Text in kurze Snippets (Zeilen/Sätze)."""
@@ -174,7 +370,7 @@ def _split_snippets(text: str) -> list[str]:
 def _route_snippets_to_sections(text: str) -> Dict[str, list[str]]:
     """
     Ordnet Snippets heuristisch zu:
-    - Eintrittssituation: jetzt/heute/vorstellung/erstkonsultation/notfall/überweisung
+    - Eintrittssituation: umstände/jetzt/heute/vorstellung/präsentation/erstkonsultation/notfall/überweisung/zuweisung/begleitung
     - Aktuelle Anamnese: symptome, suizid, auslöser, belastung, substanz, zeitliche Nähe
     - Hintergrund: früher, seit kindheit, vorgeschichte, frühere behandlungen/diagnosen
     - Soziale: arbeit, job, schule, beziehung, partner, freunde, wohnen, unterstützung, netz
@@ -218,6 +414,59 @@ def _route_snippets_to_sections(text: str) -> Dict[str, list[str]]:
                 seen.add(x); uniq.append(x)
         buckets[k] = uniq
     return buckets
+
+def _paraphrase_bucket_llm(heading: str, raw_text: str) -> str:
+    """
+    Formuliert den Bucket-Inhalt in 2–4 Sätzen neu (3. Person, sachlich, CH-Orthografie).
+    Keine neuen Infos erfinden; keine Bulletpoints.
+    """
+    if not raw_text.strip():
+        return "keine Angaben"
+    try:
+        sys_msg = (
+            "Du bist erfahrener Psychologe in einer Schweizer Praxis. "
+            "Formuliere den folgenden Notiz-/Stichwort-Text kurz um: 2–4 Sätze, "
+            "3. Person (die Patientin/der Patient), klinisch-sachlich, präzise, CH-Orthografie. "
+            "Keine neuen Informationen erfinden, keine Listen, keine Zitate."
+        )
+        usr = {"abschnitt": heading, "rohtext": raw_text}
+        txt = ask_openai(sys_msg + "\n\n" + json.dumps(usr, ensure_ascii=False))
+        txt = " ".join(x.strip() for x in (txt or "").splitlines() if x.strip())
+        return txt or raw_text.strip()
+    except Exception:
+        # Fallback: leicht geglättet
+        return re.sub(r"\s+", " ", raw_text).strip()
+
+
+def _build_anamnese_from_router(source_text: str) -> str:
+    """
+    1) Fragen/Headings entfernen
+    2) Snippets → Rubriken routen
+    3) Pro Rubrik paraphrasieren
+    4) Als gegliederte Anamnese zusammensetzen
+    """
+    clean = _strip_top_level_headings(_strip_question_lines(source_text))
+    buckets = _route_snippets_to_sections(clean)
+
+    def _join_bucket(key: str) -> str:
+        xs = buckets.get(key, []) or []
+        return " ".join(xs).strip()
+
+    sections = [
+        ("Eintrittssituation", _join_bucket("Eintrittssituation")),
+        ("Aktuelle Anamnese (inkl. Suizidalität, falls erwähnt)", _join_bucket("Aktuelle Anamnese")),
+        ("Hintergrundanamnese", _join_bucket("Hintergrundanamnese")),
+        ("Soziale Anamnese", _join_bucket("Soziale Anamnese")),
+        ("Familiäre Anamnese", _join_bucket("Familiäre Anamnese")),
+    ]
+
+    blocks = []
+    for heading, raw in sections:
+        para = _paraphrase_bucket_llm(heading, raw) if raw else "keine Angaben"
+        blocks.append(f"{heading}\n{para}")
+
+    return "\n\n".join(blocks).strip()
+
 
 def _strip_question_lines(text: str) -> str:
     """
@@ -265,7 +514,7 @@ def _fallback_rebuild_anamnese(clean_text: str) -> str:
         return " ".join(xs).strip() if xs else "keine Angaben"
     return "\n\n".join([
         "Eintrittssituation\n" + join_or_none(b.get("Eintrittssituation", [])),
-        "Aktuelle Anamnese (inkl. Suizidalität, falls erwähnt)\n" + join_or_none(b.get("Aktuelle Anamnese", [])),
+        "Aktuelle Anamnese\n" + join_or_none(b.get("Aktuelle Anamnese", [])),
         "Hintergrundanamnese\n" + join_or_none(b.get("Hintergrundanamnese", [])),
         "Soziale Anamnese\n" + join_or_none(b.get("Soziale Anamnese", [])),
         "Familiäre Anamnese\n" + join_or_none(b.get("Familiäre Anamnese", [])),
@@ -370,7 +619,7 @@ def _format_full_entries_block(payload: Dict[str, Any]) -> str:
     parts.append("Prozedere")
     parts.append((payload.get("prozedere_text") or "keine Angaben").strip())
     txt = "\n".join(parts).strip()
-    return _normalize_headings_to_spaces(txt, spaces=3)
+    return _normalize_headings_to_spaces(txt) 
 
 def compose_erstbericht(payload: Dict[str, Any]) -> str:
     ana = (payload.get("anamnese_text") or "").strip()
@@ -387,49 +636,83 @@ def compose_erstbericht(payload: Dict[str, Any]) -> str:
     parts.append("Prozedere\n" + (proz if proz else "keine Angaben"))
 
     report = "\n\n".join(parts).strip()
-    return _normalize_headings_to_spaces(report, spaces=3)
+    return _normalize_headings_to_spaces(report) 
 
 
-def _normalize_headings_to_spaces(text: str, spaces: int = 3) -> str:
+def _normalize_headings_to_spaces(text: str, spaces: int = HEADING_SPACES) -> str:
+    """
+    Vereinheitlicht Headings. Wenn HEADINGS_INLINE=False:
+      - "Heading: Inhalt" -> "Heading\nInhalt"
+      - "Heading   Inhalt" -> "Heading\nInhalt"
+      - "Heading\n\nInhalt" -> "Heading\nInhalt"
+    Wenn HEADINGS_INLINE=True:
+      - "Heading: Inhalt" / "Heading\nInhalt" -> "Heading[spaces]Inhalt"
+    """
     if not text:
         return ""
-    S = " " * max(1, spaces)
     heads_alt = _top_heads_regex()
+    S = " " * max(1, spaces)
 
-    lines = text.replace("\r\n", "\n").split("\n")
+    s = text.replace("\r\n", "\n")
+
+    if not HEADINGS_INLINE:
+        # 1) Inline-Varianten in "Heading\nInhalt" umformen
+        s = re.sub(fr"(?im)^\s*({heads_alt})\s*:\s*(.+)$", r"\1\n\2", s)
+        s = re.sub(fr"(?im)^\s*({heads_alt})\s{{2,}}(.+)$", r"\1\n\2", s)
+        # 2) Headings alleine stehen lassen, aber Mehrfachleere straffen
+        lines = s.split("\n")
+        out = []
+        i = 0
+        while i < len(lines):
+            ln = lines[i]
+            m = re.match(fr"^\s*({heads_alt})\s*:?\s*$", ln, flags=re.IGNORECASE)
+            if m:
+                head = m.group(1)
+                # nächste Nichtleerzeile als Inhalt (falls vorhanden)
+                j = i + 1
+                while j < len(lines) and lines[j].strip() == "":
+                    j += 1
+                if j < len(lines) and not re.match(fr"^\s*(?:{heads_alt})\s*:?\s*$", lines[j], re.IGNORECASE):
+                    out.append(head)
+                    out.append(lines[j].strip())
+                    i = j + 1
+                else:
+                    out.append(head)
+                    i += 1
+            else:
+                out.append(ln)
+                i += 1
+        s = "\n".join(out)
+        # Mehrfachleerzeilen -> eine
+        s = re.sub(r"\n{3,}", "\n\n", s).strip()
+        return s
+
+    # --- HEADINGS_INLINE=True ---
+    s = re.sub(fr"(?im)^\s*({heads_alt})\s*:\s*(.+)$", rf"\1{S}\2", s)
+    # Heading allein + nächste Zeile zusammenziehen
+    lines = s.split("\n")
     out = []
     i = 0
     while i < len(lines):
         ln = lines[i]
-
-        m_inline = re.match(fr"^\s*(?P<h>{heads_alt})\s*:\s*(?P<rest>.+)$", ln, flags=re.IGNORECASE)
-        if m_inline:
-            out.append(f"{m_inline.group('h')}{S}{m_inline.group('rest').strip()}")
-            i += 1
-            continue
-
-        m_head = re.match(fr"^\s*(?P<h>{heads_alt})\s*:?\s*$", ln, flags=re.IGNORECASE)
-        if m_head:
-            head = m_head.group("h")
+        m = re.match(fr"^\s*({heads_alt})\s*:?\s*$", ln, flags=re.IGNORECASE)
+        if m:
+            head = m.group(1)
             j = i + 1
             while j < len(lines) and lines[j].strip() == "":
                 j += 1
-            if j < len(lines):
-                next_ln = lines[j]
-                if not re.match(fr"^\s*(?:{heads_alt})\s*:?\s*$", next_ln, flags=re.IGNORECASE):
-                    out.append(f"{head}{S}{next_ln.strip()}")
-                    i = j + 1
-                    continue
-            out.append(head)
+            if j < len(lines) and not re.match(fr"^\s*(?:{heads_alt})\s*:?\s*$", lines[j], re.IGNORECASE):
+                out.append(f"{head}{S}{lines[j].strip()}")
+                i = j + 1
+            else:
+                out.append(head)
+                i += 1
+        else:
+            out.append(ln)
             i += 1
-            continue
-
-        out.append(ln)
-        i += 1
-
-    txt = "\n".join(out)
-    txt = re.sub(r"\n{3,}", "\n\n", txt).strip()
-    return txt
+    s = "\n".join(out)
+    s = re.sub(r"\n{3,}", "\n\n", s).strip()
+    return s
 
 # ------------------ 4 Felder – Psychologie ------------------
 
@@ -445,7 +728,7 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
     # Kanonische Reihenfolge + tolerantes Matching
     CANON = [
         ("Eintrittssituation", r"eintrittssituation"),
-        ("Aktuelle Anamnese (inkl. Suizidalität, falls erwähnt)", r"aktuelle\s+anamnese(?:\s*\(.*?\))?"),
+        ("Aktuelle Anamnese", r"aktuelle\s+anamnese(?:\s*\(.*?\))?"),
         ("Hintergrundanamnese", r"hintergrund\s*anamnese|hintergrundanamnese"),
         ("Soziale Anamnese", r"soziale\s+anamnese"),
         ("Familiäre Anamnese", r"famili(?:ä|a)re\s+anamnese|familienanamnese"),
@@ -559,44 +842,58 @@ def generate_full_entries_german(
         "- Nichts erfinden. Wo Angaben fehlen: «keine Angaben», «nicht erhoben» oder «noch ausstehend».\n"
         "- Re-Ordnung: Egal in welcher Reihenfolge der Input kommt – Anamnese **immer** gliedern als Absätze in genau dieser Reihenfolge mit genau diesen Überschriften:\n"
         "  1) Eintrittssituation \n"
-        "  2) Aktuelle Anamnese (inkl. Suizidalität, falls erwähnt)\n"
+        "  2) Aktuelle Anamnese \n"
         "  3) Hintergrundanamnese \n"
         "  4) Soziale Anamnese \n"
         "  5) Familiäre Anamnese \n"
         "- Status: **Psychostatus (heute)** als Absätze: Erscheinung/Verhalten; Sprache/Denken; Stimmung/Affekt; Wahrnehmung; Kognition/Orientierung.\n"
         "- Risiko: Abschnitt «Suizidalität & Risikoeinschätzung» explizit ausweisen (ja/nein/unklar) inkl. glaubhafter Erklärung zu **Distanzierungsfähigkeit**, **Absprachefähigkeit**, **Bündnisfähigkeit** kurz einordnen.\n"
+        "- Inhaltliche Regel: Wenn Suizidalität erwähnt wird, **integriere sie inhaltlich** in die «Aktuelle Anamnese» (keine Klammern im Titel), zusätzlich einen separaten Risiko-Abschnitt «Suizidalität & Risikoeinschätzung» anlegen.\n"
         "- Einschätzung: differenzierte, ausführliche, psychologische Fallformulierung (Auslöser/aufrechterhaltende Faktoren/Ressourcen, Funktionsniveau) + Schweregrad (leicht/mittel/schwer) + Dringlichkeit (niedrig/mittel/hoch). 2–4 Alternativhypothesen, falls sinnvoll.\n"
         "- Prozedere: klare Bulletpoints (Interventionen, Sicherheit/Krisenplan, Einbezug Dritter nach Einwilligung, Verlauf/Kontrolle, Koordination; Medikation nur allgemein, ohne Dosierungen).\n"
         "- Antworte **ausschliesslich** als JSON:\n"
         "{\n"
-        "  \"anamnese_text\": \"Eintrittssituation\\n...\\n\\nAktuelle Anamnese (inkl. Suizidalität, falls erwähnt)\\n...\\n\\nHintergrundanamnese\\n...\\n\\nSoziale Anamnese\\n...\\n\\nFamiliäre Anamnese\\n...\",\n"
+        "  \"anamnese_text\": \"Eintrittssituation\\n...\\n\\nAktuelle Anamnese\\n...\\n\\nHintergrundanamnese\\n...\\n\\nSoziale Anamnese\\n...\\n\\nFamiliäre Anamnese\\n...\",\n"
         "  \"status_text\": \"Psychostatus (heute)\\nErscheinung/Verhalten ...\\nSprache/Denken ...\\nStimmung/Affekt ...\\nWahrnehmung ...\\nKognition/Orientierung ...\\n\\nSuizidalität & Risikoeinschätzung\\nDistanzierungsfähigkeit: ja/nein/unklar | Absprachefähigkeit: ja/nein/unklar | Bündnisfähigkeit: ja/nein/unklar\",\n"
         "  \"beurteilung_text\": \"...\",\n"
         "  \"prozedere_text\": \"- ...\\n- ...\"\n"
         "}\n"
     ).strip()
 
-    # Vorverarbeitung
-    clean_input = _strip_top_level_headings(_strip_question_lines(user_input))
-    usr_payload = {"eingabetext": clean_input, "kontext": context}
+    # --- Vorverarbeitung / Extraktion ---
+    # Falls der Nutzer schon Headings nutzt, holen wir "Anamnese" und "Status" separat.
+    raw_anamnese = _extract_block(user_input, "Anamnese") or user_input
+    raw_status   = _extract_block(user_input, "Status")   or ""
+
+    clean_anamnese = _strip_top_level_headings(_strip_question_lines(raw_anamnese))
+    clean_status   = _strip_top_level_headings(raw_status)
+
+    # LLM-gestützte Kategorisierung & Paraphrase der Anamnese
+    sec = categorize_anamnese_with_llm(free_text=clean_anamnese, gap_text="", status_hint=clean_status)
+    anamnese_struct = _build_anamnese_from_sections(sec)
+
+
+    # NEU: deterministische Anamnese jetzt schon erstellen
+    anamnese_router_text = _build_anamnese_from_router(clean_anamnese)
 
     result = _ask_openai_json(
-        messages=[{"role": "system", "content": sys_msg},
-                  {"role": "user", "content": json.dumps(usr_payload, ensure_ascii=False)}]
+        messages=[
+            {"role": "system", "content": sys_msg},
+            {"role": "user", "content": json.dumps({"eingabetext": clean_anamnese + ("\n\nStatus\n" + clean_status if clean_status else ""), "kontext": context}, ensure_ascii=False)},
+        ]
     )
 
+    # Enforce + Fallback + Überschreiben der Anamnese durch unsere kategorisierte Version
     if isinstance(result, dict):
-        if result.get("anamnese_text"):
-            result["anamnese_text"] = _strip_question_lines(result["anamnese_text"])
         result = _enforce_psych_erstgespraech_layout(result)
-        ana_txt = (result.get("anamnese_text") or "")
-        if not re.search(r"(?im)^(Eintrittssituation|Aktuelle Anamnese|Hintergrundanamnese|Soziale Anamnese|Familiäre Anamnese)\b", ana_txt):
-            result["anamnese_text"] = _fallback_rebuild_anamnese(clean_input)
+        result["anamnese_text"] = anamnese_struct  # <-- HIER fixieren wir die gegliederte, paraphrasierte Anamnese
+
         if red_flags_list:
             result["red_flags"] = red_flags_list
 
     full_block = _format_full_entries_block(result if isinstance(result, dict) else {})
     return result, full_block
+
 
 # ------------------ Anamnese → Zusatzfragen ------------------
 
@@ -768,9 +1065,35 @@ def generate_assessment_and_plan_german(
         "  \"prozedere_text\": \"string\"\n"
         "}\n"
         "- Strikte Trennung: Begründungen/Hypothesen/Dringlichkeit NUR in \"einschaetzung_text\".\n"
-        "- In \"prozedere_text\" NUR umsetzbare Schritte, als Bulletpoints (je Zeile mit '-' beginnen), keine Begründungen.\n"
-        "- Umfang: 10–16 Bullets, thematisch breit: Setting/Ziele; Psychoedukation; Aktivitätsaufbau; Schlaf/Regelmässigkeit; Angst-/Exposition/Skills; Substanzkonsum (reduktions-/Abstinenzplan, falls relevant); Krisen-/Sicherheitsplan & Notfallkontakte; Einbezug Dritter (nach Einwilligung); Koordination (Hausarzt/Psychiatrie); Diagnostische Vertiefung/Screenings (indikationsbezogen); Verlauf/Monitoring (Skalen, Hausaufgaben, Termine); Arbeits-/Sozialthemen; Medikation nur als Koordination (ohne Dosierungen).\n"
+        "- In \"prozedere_text\" NUR umsetzbare Schritte, als Bulletliste.\n"
+        "- Gliedere das Prozedere als **Behandlungsplan** mit Abschnitten (Bullet als Abschnittstitel, KEINE Doppelpunkte), darunter 2–4 Unter-Bullets:\n"
+        "  - Setting & Ziele\n"
+        "    - ...\n"
+        "  - Psychoedukation\n"
+        "    - ...\n"
+        "  - Aktivitätsaufbau\n"
+        "    - ...\n"
+        "  - Schlaf & Rhythmus\n"
+        "    - ...\n"
+        "  - Angst/Skills/Exposition\n"
+        "    - ...\n"
+        "  - Substanzkonsum (falls relevant)\n"
+        "    - ...\n"
+        "  - Sicherheit/Krisenplan (falls relevant)\n"
+        "    - ...\n"
+        "  - Einbezug/Koordination\n"
+        "    - ...\n"
+        "  - Diagnostik/Screenings (indikationsbezogen)\n"
+        "    - ...\n"
+        "  - Verlauf/Monitoring\n"
+        "    - ...\n"
+        "  - Arbeit & Soziales (falls relevant)\n"
+        "    - ...\n"
+        "  - Medikation (Koordination, ohne Dosierungen)\n"
+        "    - ...\n"
+        "- Umfang flexibel (ca. 6–18 Unter-Bullets total), keine Begründungssätze im Plan."
     )
+
 
     result = _ask_openai_json(
         messages=[
@@ -788,24 +1111,62 @@ def generate_assessment_and_plan_german(
     beurteilung = _strip_heading_prefix(beurteilung, "Einschätzung")
     prozedere   = _strip_heading_prefix(prozedere,  "Prozedere")
     beurteilung, prozedere = _rectify_assessment_vs_plan(beurteilung, prozedere)
+    prozedere = _ensure_grouped_plan(prozedere)
 
     # Minimal-Fallback, falls das Modell kein Prozedere liefert
     if not prozedere:
-        prozedere = "\n".join([
-            "- Setting: wöchentliche Sitzungen, Zielvereinbarung (Schlaf, Aktivierung, Angstreduktion)",
-            "- Psychoedukation zu Stress/Angst/Depression, Modell erklären",
-            "- Aktivitätsaufbau (3 kleine, konkrete Aktivitäten/Woche, Plan schriftlich)",
-            "- Schlafhygiene & Rhythmus (Aufstehzeit fix, Abendroutine, Bildschirmreduktion)",
-            "- Angstbewältigung: Atem-/Bodyscan, kurze Expositionen (hier & jetzt, 10–15 min)",
-            "- Gedankenprotokoll (ABC), kognitive Umstrukturierung in der Sitzung",
-            "- Substanz: Bierreduktion/Abstinenzplan, Alternativen definieren",
-            "- Krisen-/Sicherheitsplan schriftlich; Notfallkontakte; Frühwarnzeichen",
-            "- Einbezug Schwester/Nichte nach Einwilligung (Unterstützungsrolle klären)",
-            "- Koordination Hausarzt (somatische Abklärung, medikamentöse Mitbeurteilung)",
-            "- Screenings (PHQ-9/GAD-7) baseline, in 2–4 Wochen wiederholen",
-            "- Hausaufgabe: Schlaf-/Aktivitäts-/Gefühlstagebuch (täglich kurz)",
-            "- Verlauf: Termin in 7 Tagen; bei Verschlechterung frühere Wiedervorstellung",
-        ])
+        fallback = {
+            "Setting & Ziele": [
+                "Sitzungen 1x/Woche (45–50 min); gemeinsame Zieldefinition (z. B. Schlaf, Aktivierung, Angstreduktion)"
+            ],
+            "Psychoedukation": [
+                "Störungsmodell & Stress-Kreislauf erklären",
+                "Umgang mit Grübeln/Vermeidung besprechen"
+            ],
+            "Aktivitätsaufbau": [
+                "3 konkrete, kleine Aktivitäten/Woche planen",
+                "Angenehme Aktivitäten und soziale Kontakte dosiert steigern"
+            ],
+            "Schlaf & Rhythmus": [
+                "Konstante Aufstehzeit; Abendroutine",
+                "Stimuluskontrolle & Bildschirmreduktion vor dem Schlafen"
+            ],
+            "Angst/Skills/Exposition": [
+                "Atem-/Bodyscan-Übungen täglich 5–10 min",
+                "Graduierte Expositionen (hier-und-jetzt, 10–15 min)",
+                "Gedankenprotokoll (ABC) + kognitive Umstrukturierung"
+            ],
+            "Substanzkonsum": [
+                "Reduktions-/Abstinenzplan (Alkohol) mit Alternativen",
+            ],
+            "Sicherheit/Krisenplan": [
+                "Krisen-/Sicherheitsplan schriftlich (Frühwarnzeichen, Coping-Schritte)",
+                "Notfallkontakte hinterlegen; Erreichbarkeit klären"
+            ],
+            "Einbezug/Koordination": [
+                "Einbezug Angehöriger nach Einwilligung (Rollen klären)",
+                "Koordination Hausarzt/Psychiatrie (somatische/med. Mitbeurteilung)"
+            ],
+            "Diagnostik/Screenings": [
+                "Baseline-Skalen (PHQ-9/GAD-7), Re-Test in 2–4 Wochen"
+            ],
+            "Verlauf/Monitoring": [
+                "Schlaf-/Aktivitäts-/Gefühlstagebuch führen",
+                "Nächster Termin in 7 Tagen; bei Verschlechterung frühere Wiedervorstellung"
+            ],
+            "Medikation (Koordination)": [
+                "Medikation nur in ärztlicher Koordination, keine Dosierungen dokumentieren"
+            ],
+        }
+        lines = []
+        for sec in SECTION_ORDER:
+            items = fallback.get(sec, [])
+            if items:
+                lines.append(f"- {sec}")
+                for it in items:
+                    lines.append(f"  - {it}")
+        prozedere = "\n".join(lines).strip()
+
 
     return beurteilung, prozedere
 
