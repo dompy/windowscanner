@@ -19,13 +19,12 @@ from tkinter import messagebox, scrolledtext, simpledialog, ttk
 from tkinter import font as tkfont
 from psy_status_editor import open_status_editor
 from gpt_logic import (
-    generate_anamnese_gaptext_german,
-    generate_assessment_and_plan_german,   # darf bleiben, wird hier aber gleich nicht mehr benutzt
-    generate_status_gaptext_german,
+    generate_assessment_and_plan_german,   # optional (nicht zwingend genutzt)
+    generate_status_gaptext_german,        # optionaler Lückentext-Assistent für Status bleibt erhalten
     generate_full_entries_german,
     resolve_red_flags_path,
     compose_erstbericht,
-    explain_plan_brief,                   
+    explain_plan_brief,
 )
 
 try:
@@ -95,9 +94,11 @@ def _smoke_test() -> int:
         print(json.dumps({"ok": False, "error": str(e)}))
         return 1
 
+
 def _subheading(self, parent: tk.Misc, text: str):
     tk.Label(parent, text=text, fg="white", bg="#222", anchor="w",
              font=("Arial", 10, "bold")).pack(fill="x")
+
 
 class ConsultationAssistant:
     def __init__(self, root: tk.Tk):
@@ -151,11 +152,6 @@ class ConsultationAssistant:
         # Anamnese (frei)
         self._label("Anamnese (frei, Patientenstimme erlaubt)")
         self.fields["Anamnese"] = self._text(height=6)
-
-        # Zusatzfragen
-        self._button("Anamnese erweitern (Fragen vorschlagen)", self.on_gaptext)
-        self._label("Erweiterte Anamnese (Antworten / Stichworte)")
-        self.txt_gap = self._text(height=6)
 
         # Psychostatus
         bar = tk.Frame(self.root, bg="#222")
@@ -261,26 +257,8 @@ class ConsultationAssistant:
                         return None
 
     # ---------- Actions ----------
-    def on_gaptext(self):
-        raw = self.fields["Anamnese"].get("1.0", tk.END).strip()
-        if not raw:
-            messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese eingeben.")
-            return
-
-        def _do():
-            payload, gap = generate_anamnese_gaptext_german(raw)
-            return payload, gap
-
-        result = self._call_with_key_retry("Lückentext", _do)
-        if not result:
-            return
-        payload, gap = result  # type: ignore[misc]
-        self.txt_gap.delete("1.0", tk.END)
-        self.txt_gap.insert(tk.END, gap or "")
-
     def on_status_gaptext(self, phase: str = "initial"):
-        gap = self.txt_gap.get("1.0", tk.END).strip() if hasattr(self, "txt_gap") else ""
-        anamnese_src = gap or self.fields.get("Anamnese").get("1.0", tk.END).strip()
+        anamnese_src = self.fields.get("Anamnese").get("1.0", tk.END).strip()
         if not anamnese_src:
             messagebox.showwarning("Hinweis", "Keine Anamnese vorhanden.")
             return
@@ -305,10 +283,8 @@ class ConsultationAssistant:
 
     def on_psychostatus(self):
         anam = self.fields["Anamnese"].get("1.0", tk.END).strip()
-        ext = getattr(self, "txt_gap", None)
-        ext_txt = ext.get("1.0", tk.END).strip() if ext else ""
         stat = self.fields["Status"].get("1.0", tk.END).strip()
-        ctx = "\n\n".join(x for x in (anam, ext_txt, stat) if x)
+        ctx = "\n\n".join(x for x in (anam, stat) if x)
 
         text, _state = open_status_editor(self.root, json_path="psychopathologischer_befund.json", context_text=ctx)
         if not text:
@@ -317,19 +293,17 @@ class ConsultationAssistant:
         self.fields["Status"].insert(tk.END, text)
 
     def on_finalize(self):
-        anamnese_final = self.txt_gap.get("1.0", tk.END).strip() or self.fields["Anamnese"].get("1.0", tk.END).strip()
+        anamnese_final = self.fields["Anamnese"].get("1.0", tk.END).strip()
         status_final   = self.fields["Status"].get("1.0", tk.END).strip()
         if not anamnese_final:
-            messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese/Lückentext erstellen.")
+            messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese eingeben.")
             return
 
-        # 1) EINMAL die standardisierte Voll-Generierung; daraus füttern wir alle Felder
         def _do_full():
             combo = "Anamnese\n " + anamnese_final
             if status_final:
                 combo += "\n\nStatus\n " + status_final
             payload, _ = generate_full_entries_german(combo, context={})
-            # Oberes UI-Prozedere = derselbe Plan wie im Erstbericht, optional mit Kurzbegründungen
             proz_ui = explain_plan_brief(
                 payload.get("prozedere_text", ""),
                 anamnese=anamnese_final,
@@ -343,14 +317,12 @@ class ConsultationAssistant:
             return
         payload, proz_ui = res
 
-        # 2) UI-Felder aus demselben Payload bestücken (Konsistenz!)
         self.fields["Einschätzung"].delete("1.0", tk.END)
         self.fields["Einschätzung"].insert(tk.END, payload.get("beurteilung_text") or "")
 
         self.fields["Prozedere"].delete("1.0", tk.END)
         self.fields["Prozedere"].insert(tk.END, proz_ui or (payload.get("prozedere_text") or ""))
 
-        # 3) Red Flags & Erstbericht
         self.update_red_flags(anamnese_final, status_final)
 
         final_report = compose_erstbericht(payload)
@@ -358,25 +330,8 @@ class ConsultationAssistant:
         self.output_full.insert(tk.END, final_report)
 
     def on_generate_full_direct(self):
-        # Roh-Kombination aus den Feldern (robust gegen Reihenfolge)
         parts: list[str] = []
-        anamnese_raw = self.fields["Anamnese"].get("1.0", tk.END).strip()
-        gap_raw = self.txt_gap.get("1.0", tk.END).strip()
-
-        # nur Antworten/Stichworte aus dem Gap-Feld, keine reinen Fragezeilen
-        def _answers_only(s: str) -> str:
-            import re
-            out = []
-            for ln in (s or "").splitlines():
-                if re.match(r"^\s*-\s+.+\?\s*$", ln):  # Bullet-Frage
-                    continue
-                if re.match(r"^\s*.+\?\s*$", ln):      # Fragezeile
-                    continue
-                out.append(ln)
-            return "\n".join(out).strip()
-
-        answers_only = _answers_only(gap_raw)
-        anamnese_src = "\n\n".join(x for x in (anamnese_raw, answers_only) if x).strip()
+        anamnese_src = self.fields["Anamnese"].get("1.0", tk.END).strip()
         bef = self.fields["Status"].get("1.0", tk.END).strip()
         beu = self.fields["Einschätzung"].get("1.0", tk.END).strip()
         proz = self.fields["Prozedere"].get("1.0", tk.END).strip()
@@ -404,7 +359,6 @@ class ConsultationAssistant:
             return
         payload, final_report = result  # type: ignore[misc]
 
-        # Felder normiert befüllen
         self.fields["Anamnese"].delete("1.0", tk.END)
         self.fields["Anamnese"].insert(tk.END, (payload.get("anamnese_text") or ""))
         self.fields["Status"].delete("1.0", tk.END)
@@ -441,10 +395,6 @@ class ConsultationAssistant:
         self.txt_redflags.configure(state="disabled")
 
     def build_output(self, anamnese: str, status: str, einschätzung: str, prozedere: str):
-        """
-        Baut IMMER den standardisierten Erstbericht via generate_full_entries_german + compose_erstbericht.
-        So bleibt die Ausgabe konsistent (Absätze, Überschriften).
-        """
         parts: list[str] = []
         if anamnese:
             parts.append("Anamnese\n " + anamnese)
@@ -476,13 +426,13 @@ class ConsultationAssistant:
     def reset_all(self):
         for k in ("Anamnese", "Status", "Einschätzung", "Prozedere"):
             self.fields[k].delete("1.0", tk.END)
-        self.txt_gap.delete("1.0", tk.END)
         self.output_full.delete("1.0", tk.END)
         self.set_red_flags([])
 
     def on_change_api_key(self):
         if ensure_api_key(self.root, force_prompt=True):
             messagebox.showinfo("OK", "API-Key wurde aktualisiert.")
+
 
 def main():
     if "--smoke-test" in sys.argv:
@@ -496,5 +446,8 @@ def main():
     app = ConsultationAssistant(root)
     root.mainloop()
 
+
 if __name__ == "__main__":
     main()
+
+

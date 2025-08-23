@@ -7,11 +7,11 @@ Psychologie-fokussierte Logik für den Praxis-Assistenten
 - Funktionen, die vom UI genutzt werden:
     * resolve_red_flags_path()
     * generate_full_entries_german()
-    * generate_anamnese_gaptext_german()
     * generate_status_gaptext_german()
     * generate_assessment_and_plan_german()
     * compose_erstbericht()
-    * format_anamnese_fliess_text()  # optionaler Fallback
+    * reset_openai_client()
+    * explain_plan_brief()
 """
 from __future__ import annotations
 
@@ -39,11 +39,8 @@ TOP_HEADS = [
     "Status",
 ]
 
+
 def _top_heads_regex() -> str:
-    """
-    Liefert ein Regex-Alternativenmuster für die Top-Level-Überschriften inkl. geläufiger Varianten
-    (Umlaute/ae, &/und, alternative Bezeichnungen).
-    """
     alts = [
         r"Eintrittssituation",
         r"Aktuelle Anamnese(?:\s*\(inkl\. Suizidalität, falls erwähnt\))?",
@@ -68,8 +65,8 @@ MODEL_DEFAULT = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 _client: Optional[OpenAI] = None
 
-HEADINGS_INLINE = False   # False => "Überschrift\nInhalt", True => "Überschrift   Inhalt"
-HEADING_SPACES = 3        # nur relevant, wenn HEADINGS_INLINE=True
+HEADINGS_INLINE = False
+HEADING_SPACES = 3
 
 
 def _get_openai_client() -> OpenAI:
@@ -81,8 +78,8 @@ def _get_openai_client() -> OpenAI:
         _client = OpenAI(api_key=api_key)
     return _client
 
+
 def reset_openai_client() -> None:
-    """Vergisst den gecachten Client. Beim nächsten Call wird aus der aktuellen ENV neu initialisiert."""
     global _client
     _client = None
 
@@ -91,10 +88,10 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 RED_FLAGS_PATH = os.path.join(THIS_DIR, "red_flags.json")
 PSYCH_RED_FLAGS_PATH = os.path.join(THIS_DIR, "psych_red_flags.json")
 
-APP_MODE = os.getenv("APP_MODE", "psychology").lower()  # optionaler Modus-Schalter
+APP_MODE = os.getenv("APP_MODE", "psychology").lower()
+
 
 def resolve_red_flags_path(prefer_psych: bool = True) -> str:
-    """Bevorzugt psychologische Red-Flags, fällt ansonsten auf medizinische zurück."""
     prefer_psych = True if APP_MODE == "psychology" else prefer_psych
     try:
         if prefer_psych and os.path.exists(PSYCH_RED_FLAGS_PATH):
@@ -106,15 +103,8 @@ def resolve_red_flags_path(prefer_psych: bool = True) -> str:
     return RED_FLAGS_PATH
 
 # ------------------ Helper ------------------
+
 def _rectify_assessment_vs_plan(einsch: str, proz: str) -> tuple[str, str]:
-    """
-    Zieht fehlplatzierte Einschätzungs-Sätze aus dem Prozedere zurück.
-    Heuristik:
-    - Im Prozedere bleiben Bullet-/Listenzeilen oder Zeilen, die mit typischen Plan-Köpfen beginnen.
-    - Zeilen mit Schlüsselwörtern der Einschätzung (Hypothese, Alternativhypothese, Dringlichkeit, Schweregrad, DD etc.)
-      wandern zurück in die Einschätzung.
-    - Nackte Freitext-Zeilen ohne Bullet werden standardmässig zur Einschätzung verschoben.
-    """
     if not proz:
         return einsch, proz
 
@@ -133,26 +123,23 @@ def _rectify_assessment_vs_plan(einsch: str, proz: str) -> tuple[str, str]:
     for raw in proz.splitlines():
         ln = raw.strip()
         if not ln:
-            kept.append(raw)
-            continue
+            kept.append(raw); continue
 
         is_bullet = bool(re.match(r"^\s*[-•–]\s+", ln))
         starts_like_plan = ln.lower().startswith(plan_heads)
 
         if is_bullet or starts_like_plan:
-            kept.append(raw)
-            continue
+            kept.append(raw); continue
 
         if assess_kw.search(ln):
-            moved.append(ln)
-            continue
+            moved.append(ln); continue
 
-        # Freitext ohne Bullet -> tendenziell Einschätzung
         moved.append(ln)
 
-    new_einsch = (einsch.strip() + ("\n\n" + "\n".join(moved).strip() if moved else "")).strip()
+    new_einsch = (einsch.strip() + (("\n\n" + "\n".join(moved).strip()) if moved else "")).strip()
     new_proz   = "\n".join(kept).strip()
     return new_einsch, new_proz
+
 
 def explain_plan_brief(
     plan_text: str,
@@ -162,11 +149,6 @@ def explain_plan_brief(
     einschaetzung: str = "",
     max_words: int = 12,
 ) -> str:
-    """
-    Hängt an JEDES Unter-Bullet (Zeilen, die mit '  - ' beginnen) eine sehr kurze
-    Begründung an: ' – warum: …'. Struktur sonst unverändert lassen.
-    Gibt bei Fehlern einfach den Original-Plan zurück.
-    """
     plan = (plan_text or "").strip()
     if not plan:
         return plan
@@ -195,8 +177,8 @@ def explain_plan_brief(
     except Exception:
         return plan
 
+
 def _extract_block(text: str, head: str) -> str:
-    """Extrahiert den Block nach einer Top-Überschrift bis zur nächsten Top-Überschrift."""
     if not text:
         return ""
     heads = _top_heads_regex()
@@ -213,29 +195,26 @@ def _extract_block(text: str, head: str) -> str:
     return s[start:end].strip()
 
 
-def categorize_anamnese_with_llm(free_text: str, gap_text: str = "", status_hint: str = "") -> Dict[str, str]:
+def categorize_anamnese_with_llm(free_text: str, status_hint: str = "") -> Dict[str, str]:
     """
-    Nutzt das LLM, um Freitext + evtl. Gap-Antworten in die 5 Abschnitte zu verteilen und paraphrasiert zu formulieren.
+    Nutzt das LLM, um Freitext in fünf Abschnitte zu verteilen und paraphrasiert zu formulieren.
     Status wird nur als Kontext verwendet (keine 1:1-Übernahme in die Anamnese).
     Rückgabe-Keys: eintritt, aktuell, hintergrund, sozial, familiaer
     """
     sys_msg = (
         "Du bist leitender Psychiater in einer Schweizer Ambulanz. "
-        "Aufgabe: Zerlege den Patiententext in fünf Anamneseabschnitte und paraphrasiere klinisch präzise, "
-        "in vollständigen Sätzen, ohne Fragen/Listenstil. "
-        "Verwende Schweizer Orthografie (ss). "
+        "Zerlege den Patiententext in fünf Anamneseabschnitte und paraphrasiere klinisch präzise, "
+        "in vollständigen Sätzen, ohne Fragen/Listenstil. Schweizer Orthografie (ss). "
         "Nutze Angaben aus dem Psychostatus nur zur Kontextualisierung (z. B. Verlauf, Glaubhaftigkeit), "
-        "übernimm aber keine Status-Beobachtungen in die Anamnese. "
-        "Fehlende Informationen -> 'keine Angaben'."
+        "übernimm aber keine Status-Beobachtungen in die Anamnese. Fehlende Informationen -> 'keine Angaben'."
     )
 
     user_payload = {
         "freitext": _strip_question_lines(free_text or ""),
-        "gap_antworten": _strip_question_lines(gap_text or ""),
         "status_kontext": (status_hint or ""),
         "abschnitte": [
             "Eintrittssituation",
-            "Aktuelle Anamnese (inkl. Suizidalität, falls erwähnt)",
+            "Aktuelle Anamnese",
             "Hintergrundanamnese",
             "Soziale Anamnese",
             "Familiäre Anamnese",
@@ -260,7 +239,6 @@ def categorize_anamnese_with_llm(free_text: str, gap_text: str = "", status_hint
     if not isinstance(result, dict):
         result = {}
 
-    # Reinigung + Defaults
     def clean(x: str) -> str:
         x = (x or "").strip()
         x = re.sub(r"\s+\n", "\n", x)
@@ -276,10 +254,9 @@ def categorize_anamnese_with_llm(free_text: str, gap_text: str = "", status_hint
 
 
 def _build_anamnese_from_sections(sec: Dict[str, str]) -> str:
-    """Baut den finalen Anamnese-Block mit Überschriften auf separater Zeile."""
     parts = [
         "Eintrittssituation\n" + (sec.get("eintritt") or "keine Angaben"),
-        "Aktuelle Anamnese (inkl. Suizidalität, falls erwähnt)\n" + (sec.get("aktuell") or "keine Angaben"),
+        "Aktuelle Anamnese\n" + (sec.get("aktuell") or "keine Angaben"),
         "Hintergrundanamnese\n" + (sec.get("hintergrund") or "keine Angaben"),
         "Soziale Anamnese\n" + (sec.get("sozial") or "keine Angaben"),
         "Familiäre Anamnese\n" + (sec.get("familiaer") or "keine Angaben"),
@@ -315,22 +292,18 @@ SECTION_PATTERNS = {
     "Einbezug/Koordination":     r"\b(einbezug|angehörig|hausarzt|psychiatr|koordination)\b",
     "Diagnostik/Screenings":     r"\b(screen|diagnostik|fragebogen|phq|gad|test)\b",
     "Verlauf/Monitoring":        r"\b(verlauf|monitor|skala|tagebuch|hausaufgabe|termin|review|evaluation)\b",
-    "Arbeit & Soziales":         r"\b(arbeit|job|krankmeldung|iv|re\-?integration|sozial)\b",
+    "Arbeit & Soziales":         r"\b(arbeit|job|krankmeldung|iv|re-?integration|sozial)\b",
     "Medikation (Koordination)": r"\b(medik|ärzt|somat|apothek)\b",
 }
+
 
 def _is_already_grouped(proz: str) -> bool:
     if not proz:
         return False
-    # Mind. zwei eingerückte Unterbullets -> bereits gruppiert
     return sum(1 for ln in proz.splitlines() if re.match(r"^\s{2,}-\s+", ln.strip(" "))) >= 2
 
+
 def _ensure_grouped_plan(proz: str) -> str:
-    """
-    Wenn prozedere_text keine gruppierte Struktur hat, ordnet diese Funktion
-    die Bullets anhand von Keywords den Standardabschnitten zu und baut
-    einen gut lesbaren, professionellen Behandlungsplan (Bulletabschnitte + Unterbullets).
-    """
     if not proz:
         return ""
     if _is_already_grouped(proz):
@@ -338,7 +311,6 @@ def _ensure_grouped_plan(proz: str) -> str:
 
     proz = re.sub(r"(?im)^\s*behandlungsplan\s*$", "", proz).strip()
 
-    # Nur Bulletzeilen extrahieren
     bullets = []
     for ln in proz.replace("\r\n", "\n").split("\n"):
         m = re.match(r"^\s*[-•–]\s+(.*\S)\s*$", ln)
@@ -348,7 +320,6 @@ def _ensure_grouped_plan(proz: str) -> str:
     if not bullets:
         return proz.strip()
 
-    # Routing
     buckets = {sec: [] for sec in SECTION_ORDER}
     other = []
     for item in bullets:
@@ -363,12 +334,10 @@ def _ensure_grouped_plan(proz: str) -> str:
             other.append(item)
 
     if other:
-        # „Sonstiges“ an sinnvolle Abschnitte anhängen, bevorzugt Setting/Verlauf
         for x in other:
             tgt = "Verlauf/Monitoring" if re.search(r"\b(termin|kontroll|review|evaluation)\b", x, re.IGNORECASE) else "Setting & Ziele"
             buckets[tgt].append(x)
 
-    # Duplikate entfernen & sauberen Plan bauen
     out_lines = []
     for sec in SECTION_ORDER:
         items = []
@@ -389,18 +358,15 @@ def _ensure_grouped_plan(proz: str) -> str:
 
 
 def _split_snippets(text: str) -> list[str]:
-    """Zerschneidet freien Text in kurze Snippets (Zeilen/Sätze)."""
     if not text:
         return []
     s = text.replace("\r\n", "\n")
-    # harte Splits an Zeile/Strichpunkt
     chunks = re.split(r"[;\n]+", s)
     out = []
     for ch in chunks:
         ch = ch.strip(" -•–\t")
         if not ch:
             continue
-        # Grob an Satzende splitten (Punkt/!/?), aber kurze Reststücke zusammenlassen
         parts = re.split(r"(?<=[.!?])\s+", ch)
         for p in parts:
             p = p.strip()
@@ -408,15 +374,8 @@ def _split_snippets(text: str) -> list[str]:
                 out.append(p)
     return out
 
+
 def _route_snippets_to_sections(text: str) -> Dict[str, list[str]]:
-    """
-    Ordnet Snippets heuristisch zu:
-    - Eintrittssituation: umstände/jetzt/heute/vorstellung/präsentation/erstkonsultation/notfall/überweisung/zuweisung/begleitung
-    - Aktuelle Anamnese: symptome, suizid, auslöser, belastung, substanz, zeitliche Nähe
-    - Hintergrund: früher, seit kindheit, vorgeschichte, frühere behandlungen/diagnosen
-    - Soziale: arbeit, job, schule, beziehung, partner, freunde, wohnen, unterstützung, netz
-    - Familiäre: mutter, vater, schwester, bruder, familie, familiär, erkrankungen in familie
-    """
     snips = _split_snippets(_strip_question_lines(text))
     buckets = {
         "Eintrittssituation": [],
@@ -443,10 +402,8 @@ def _route_snippets_to_sections(text: str) -> Dict[str, list[str]]:
         if re.search(r"\b(mutter|vater|schwester|bruder|tochter|sohn|familie|familiär|genet|angehörig|nichte|neffe)\b", low):
             buckets["Familiäre Anamnese"].append(s);  continue
 
-        # Default: Aktuelle Anamnese
         buckets["Aktuelle Anamnese"].append(s)
 
-    # Deduplizieren und kurz glätten
     for k in buckets:
         seen = set()
         uniq = []
@@ -456,11 +413,8 @@ def _route_snippets_to_sections(text: str) -> Dict[str, list[str]]:
         buckets[k] = uniq
     return buckets
 
+
 def _paraphrase_bucket_llm(heading: str, raw_text: str) -> str:
-    """
-    Formuliert den Bucket-Inhalt in 2–4 Sätzen neu (3. Person, sachlich, CH-Orthografie).
-    Keine neuen Infos erfinden; keine Bulletpoints.
-    """
     if not raw_text.strip():
         return "keine Angaben"
     try:
@@ -475,17 +429,10 @@ def _paraphrase_bucket_llm(heading: str, raw_text: str) -> str:
         txt = " ".join(x.strip() for x in (txt or "").splitlines() if x.strip())
         return txt or raw_text.strip()
     except Exception:
-        # Fallback: leicht geglättet
         return re.sub(r"\s+", " ", raw_text).strip()
 
 
 def _build_anamnese_from_router(source_text: str) -> str:
-    """
-    1) Fragen/Headings entfernen
-    2) Snippets → Rubriken routen
-    3) Pro Rubrik paraphrasieren
-    4) Als gegliederte Anamnese zusammensetzen
-    """
     clean = _strip_top_level_headings(_strip_question_lines(source_text))
     buckets = _route_snippets_to_sections(clean)
 
@@ -495,7 +442,7 @@ def _build_anamnese_from_router(source_text: str) -> str:
 
     sections = [
         ("Eintrittssituation", _join_bucket("Eintrittssituation")),
-        ("Aktuelle Anamnese (inkl. Suizidalität, falls erwähnt)", _join_bucket("Aktuelle Anamnese")),
+        ("Aktuelle Anamnese", _join_bucket("Aktuelle Anamnese")),
         ("Hintergrundanamnese", _join_bucket("Hintergrundanamnese")),
         ("Soziale Anamnese", _join_bucket("Soziale Anamnese")),
         ("Familiäre Anamnese", _join_bucket("Familiäre Anamnese")),
@@ -510,16 +457,10 @@ def _build_anamnese_from_router(source_text: str) -> str:
 
 
 def _strip_question_lines(text: str) -> str:
-    """
-    Entfernt Fragezeilen aus Freitext:
-    - Bullet-Fragen ('- ...?')
-    - alleinstehende Fragezeilen ('...?')
-    Repariert auch '?n' -> '?\n'.
-    """
     if not text:
         return ""
     s = text.replace("\r\n", "\n")
-    s = re.sub(r"\?n(\s|$)", "?\n", s)  # Artefakt
+    s = re.sub(r"\?n(\s|$)", "?\n", s)
     out = []
     for ln in s.splitlines():
         if re.match(r"^\s*-\s+.+\?\s*$", ln):
@@ -529,25 +470,24 @@ def _strip_question_lines(text: str) -> str:
         out.append(ln)
     return "\n".join(out).strip()
 
+
 def _strip_top_level_headings(text: str) -> str:
     if not text:
         return ""
     s = text.replace("\r\n", "\n")
     heads = _top_heads_regex()
-    # Zeilen, die nur aus einer Überschrift bestehen, entfernen
     s = re.sub(rf"(?im)^\s*(?:{heads})\s*:?\s*$", "", s)
-    # Überschrift mit folgendem Doppelpunkt am Zeilenanfang entfernen
     s = re.sub(rf"(?im)^\s*(?:{heads})\s*:\s*", "", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
 
 
 def _strip_heading_prefix(block: str, heading: str) -> str:
-    """Entfernt eine evtl. mitgelieferte Überschrift ('Einschätzung'/'Prozedere') am Blockanfang."""
     if not block:
         return ""
     pat = rf"(?im)^\s*\*{{0,2}}{re.escape(heading)}\*{{0,2}}\s*:?\s*$"
     return re.sub(pat, "", block).strip()
+
 
 def _fallback_rebuild_anamnese(clean_text: str) -> str:
     b = _route_snippets_to_sections(clean_text)
@@ -574,6 +514,7 @@ def ask_openai(prompt: str) -> str:
     )
     return (resp.choices[0].message.content or "").strip()
 
+
 def _ask_openai_json(*, messages: List[Dict[str, str]], model: str = MODEL_DEFAULT, temperature: float = 0.2) -> Dict[str, Any]:
     resp = _get_openai_client().chat.completions.create(
         model=model,
@@ -587,12 +528,13 @@ def _ask_openai_json(*, messages: List[Dict[str, str]], model: str = MODEL_DEFAU
     except json.JSONDecodeError:
         return {"raw_text": content}
 
+
 def swiss_erstbericht_style(humanize: bool = True) -> str:
     base = (
         "Schweizer Orthografie (ss statt ß). "
         "Ausführlicher, detaillierter Erstbericht in vollständigen Sätzen; klinisch-sachlich, präzise, ohne Floskeln. "
-        "Klare Gliederung: Eintrittssituation; Aktuelle Anamnese (inkl. Suizidalität); Hintergrundanamnese; "
-        "Soziale Anamnese; Familiäre Anamnese (alle Familien bezogenen Infos); Psychostatus (heute); Suizidalität inkl. glaubhafter Erklärung & Risikoeinschätzung; "
+        "Klare Gliederung: Eintrittssituation; Aktuelle Anamnese; Hintergrundanamnese; "
+        "Soziale Anamnese; Familiäre Anamnese; Psychostatus (heute); Suizidalität inkl. glaubhafter Erklärung & Risikoeinschätzung; "
         "Differenzierte Einschätzung (Distanzierungs-/Absprache-/Bündnisfähigkeit integrieren); Prozedere. "
         "Wörtliche Patienten-Zitate sparsam einstreuen und mit «…» kennzeichnen. "
         "Keine Aufzählungslisten, ausser im Abschnitt «Prozedere»."
@@ -601,50 +543,6 @@ def swiss_erstbericht_style(humanize: bool = True) -> str:
         base += " Ton: menschlich, respektvoll, aber fachlich."
     return base
 
-def _fallback_format_anamnese_local(freetext: str, gaptext: str) -> str:
-    """Sehr einfacher Fallback ohne LLM: Bullet-Zeilen glätten (vollständige Sätze)."""
-    import re
-    parts = []
-    ft = (freetext or "").strip()
-    if ft:
-        if not ft.endswith((".", "!", "?")):
-            ft = ft.rstrip() + "."
-        parts.append(ft)
-    for raw in (gaptext or "").splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        line = re.sub(r"^\s*[–-]\s*", "", line)
-        line = re.sub(r"\?\s*ja\s*$", " (bejaht).", line)
-        line = re.sub(r"\?\s*nein\s*$", " (verneint).", line)
-        if not line.endswith((".", "!", "?")):
-            line += "."
-        parts.append(line)
-    return " ".join(parts).strip()
-
-def format_anamnese_fliess_text(freetext: str, gaptext: str) -> str:
-    """
-    Formatiert Freitext + 'Erweiterte Anamnese' zu EINEM Fliesstext-Absatz (ausführlicher Stil).
-    """
-    try:
-        sys_msg = (
-            "Du bist erfahrener Psychiater/Psychologe in einer Schweizer Praxis. "
-            "Formuliere aus a) kurzer freier Anamnese und b) einer Liste mit Zusatzfragen/-antworten "
-            "EINEN gut lesbaren Absatz in vollständigen Sätzen (kein Stichwortstil). "
-            "Schweizer Orthografie (ss). Keine Diagnosen. Wenn passend, einzelne kurze Zitate des Patienten («…»)."
-        ).strip()
-        usr = {
-            "freitext": freetext or "",
-            "zusatzfragen_liste": gaptext or "",
-            "hinweis": "Nur EIN Absatz. Keine Bulletpoints."
-        }
-        text = ask_openai(sys_msg + "\n\nDaten:\n" + json.dumps(usr, ensure_ascii=False))
-        text = (text or "").strip()
-        if text:
-            return " ".join(x.strip() for x in text.splitlines() if x.strip())
-    except Exception:
-        pass
-    return _fallback_format_anamnese_local(freetext, gaptext)
 
 def _format_full_entries_block(payload: Dict[str, Any]) -> str:
     parts: List[str] = []
@@ -660,7 +558,8 @@ def _format_full_entries_block(payload: Dict[str, Any]) -> str:
     parts.append("Prozedere")
     parts.append((payload.get("prozedere_text") or "keine Angaben").strip())
     txt = "\n".join(parts).strip()
-    return _normalize_headings_to_spaces(txt) 
+    return _normalize_headings_to_spaces(txt)
+
 
 def compose_erstbericht(payload: Dict[str, Any]) -> str:
     ana = (payload.get("anamnese_text") or "").strip()
@@ -677,18 +576,10 @@ def compose_erstbericht(payload: Dict[str, Any]) -> str:
     parts.append("Prozedere\n" + (proz if proz else "keine Angaben"))
 
     report = "\n\n".join(parts).strip()
-    return _normalize_headings_to_spaces(report) 
+    return _normalize_headings_to_spaces(report)
 
 
 def _normalize_headings_to_spaces(text: str, spaces: int = HEADING_SPACES) -> str:
-    """
-    Vereinheitlicht Headings. Wenn HEADINGS_INLINE=False:
-      - "Heading: Inhalt" -> "Heading\nInhalt"
-      - "Heading   Inhalt" -> "Heading\nInhalt"
-      - "Heading\n\nInhalt" -> "Heading\nInhalt"
-    Wenn HEADINGS_INLINE=True:
-      - "Heading: Inhalt" / "Heading\nInhalt" -> "Heading[spaces]Inhalt"
-    """
     if not text:
         return ""
     heads_alt = _top_heads_regex()
@@ -697,23 +588,20 @@ def _normalize_headings_to_spaces(text: str, spaces: int = HEADING_SPACES) -> st
     s = text.replace("\r\n", "\n")
 
     if not HEADINGS_INLINE:
-        # 1) Inline-Varianten in "Heading\nInhalt" umformen
         s = re.sub(fr"(?im)^\s*({heads_alt})\s*:\s*(.+)$", r"\1\n\2", s)
         s = re.sub(fr"(?im)^\s*({heads_alt})\s{{2,}}(.+)$", r"\1\n\2", s)
-        # 2) Headings alleine stehen lassen, aber Mehrfachleere straffen
         lines = s.split("\n")
         out = []
         i = 0
         while i < len(lines):
             ln = lines[i]
-            m = re.match(fr"^\s*({heads_alt})\s*:?\s*$", ln, flags=re.IGNORECASE)
+            m = re.match(fr"^\s*({heads_alt})\s*:?\s$", ln, flags=re.IGNORECASE)
             if m:
                 head = m.group(1)
-                # nächste Nichtleerzeile als Inhalt (falls vorhanden)
                 j = i + 1
                 while j < len(lines) and lines[j].strip() == "":
                     j += 1
-                if j < len(lines) and not re.match(fr"^\s*(?:{heads_alt})\s*:?\s*$", lines[j], re.IGNORECASE):
+                if j < len(lines) and not re.match(fr"^\s*(?:{heads_alt})\s*:?\s$", lines[j], re.IGNORECASE):
                     out.append(head)
                     out.append(lines[j].strip())
                     i = j + 1
@@ -724,25 +612,22 @@ def _normalize_headings_to_spaces(text: str, spaces: int = HEADING_SPACES) -> st
                 out.append(ln)
                 i += 1
         s = "\n".join(out)
-        # Mehrfachleerzeilen -> eine
         s = re.sub(r"\n{3,}", "\n\n", s).strip()
         return s
 
-    # --- HEADINGS_INLINE=True ---
     s = re.sub(fr"(?im)^\s*({heads_alt})\s*:\s*(.+)$", rf"\1{S}\2", s)
-    # Heading allein + nächste Zeile zusammenziehen
     lines = s.split("\n")
     out = []
     i = 0
     while i < len(lines):
         ln = lines[i]
-        m = re.match(fr"^\s*({heads_alt})\s*:?\s*$", ln, flags=re.IGNORECASE)
+        m = re.match(fr"^\s*({heads_alt})\s*:?\s$", ln, flags=re.IGNORECASE)
         if m:
             head = m.group(1)
             j = i + 1
             while j < len(lines) and lines[j].strip() == "":
                 j += 1
-            if j < len(lines) and not re.match(fr"^\s*(?:{heads_alt})\s*:?\s*$", lines[j], re.IGNORECASE):
+            if j < len(lines) and not re.match(fr"^\s*(?:{heads_alt})\s*:?\s$", lines[j], re.IGNORECASE):
                 out.append(f"{head}{S}{lines[j].strip()}")
                 i = j + 1
             else:
@@ -758,15 +643,8 @@ def _normalize_headings_to_spaces(text: str, spaces: int = HEADING_SPACES) -> st
 # ------------------ 4 Felder – Psychologie ------------------
 
 def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Erzwingt saubere Abschnitte (ohne Doppelpunkt-Überschriften) für die Anamnese
-    und ergänzt bei Bedarf den Risiko-Block im Status.
-    Format:
-    <Überschrift>\n<Inhalt>\n\n<Überschrift>\n<Inhalt> ...
-    """
     import re
 
-    # Kanonische Reihenfolge + tolerantes Matching
     CANON = [
         ("Eintrittssituation", r"eintrittssituation"),
         ("Aktuelle Anamnese", r"aktuelle\s+anamnese(?:\s*\(.*?\))?"),
@@ -779,8 +657,7 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
         text = (text or "").strip()
         if not text:
             return {}
-        # Header am Zeilenanfang, optional mit Doppelpunkt am Ende
-        head_pat = r"(?im)^(?P<h>(?:{alts}))\s*:?\s*$".format(
+        head_pat = r"(?im)^(?P<h>(?:{alts}))\s*:?\s$".format(
             alts="|".join(f"(?:{pat})" for _, pat in CANON)
         )
         parts: Dict[str, str] = {}
@@ -799,7 +676,6 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
             start = m.end()
             end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
             raw = text[start:end].strip()
-            # Eventuell „hängengebliebene“ Head-Zeilen im Inhalt entfernen
             raw = re.sub(head_pat, "", raw).strip()
             raw = re.sub(r"\n{3,}", "\n\n", raw).strip()
             label = _canon_label(m.group("h"))
@@ -807,11 +683,9 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
                 parts[label] = raw
         return parts
 
-    # --- Anamnese neu aufbauen (ohne Doppelpunkte) ---
     anamnese_in = payload.get("anamnese_text", "") or ""
-    # Leading-Freitext vor erster Überschrift auffangen
     lead_txt = ""
-    m_first = re.search(r"(?im)^(eintrittssituation|aktuelle\s+anamnese(?:\s*\(.*?\))?|hintergrund\s*anamnese|hintergrundanamnese|soziale\s+anamnese|famili(?:ä|a)re\s+anamnese|familienanamnese)\s*:?\s*$", anamnese_in)
+    m_first = re.search(r"(?im)^(eintrittssituation|aktuelle\s+anamnese(?:\s*\(.*?\))?|hintergrund\s*anamnese|hintergrundanamnese|soziale\s+anamnese|famili(?:ä|a)re\s+anamnese|familienanamnese)\s*:?\s$", anamnese_in)
     if m_first and m_first.start() > 0:
         lead_txt = _strip_question_lines(anamnese_in[:m_first.start()].strip())
 
@@ -820,11 +694,10 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
     for label, _ in CANON:
         content = (found.get(label) or "").strip()
         content = re.sub(
-            r"(?im)^(eintrittssituation|aktuelle\s+anamnese(?:\s*\(.*?\))?|hintergrund\s*anamnese|hintergrundanamnese|soziale\s+anamnese|famili(?:ä|a)re\s+anamnese|familienanamnese)\s*:?\s*$",
+            r"(?im)^(eintrittssituation|aktuelle\s+anamnese(?:\s*\(.*?\))?|hintergrund\s*anamnese|hintergrundanamnese|soziale\s+anamnese|famili(?:ä|a)re\s+anamnese|familienanamnese)\s*:?\s$",
             "", content
         ).strip()
 
-        # Leading-Freitext sinnvoll verteilen
         if lead_txt:
             if label.startswith("Eintrittssituation") and not content:
                 content = lead_txt; lead_txt = ""
@@ -837,13 +710,11 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
 
     payload["anamnese_text"] = "\n\n".join(rebuilt).strip()
 
-    # --- Status sichern ---
     status = (payload.get("status_text") or "").strip()
     if status and not status.lower().startswith("psychostatus"):
         status = f"Psychostatus (heute)\n{status}".strip()
 
-    # Schritt 4: robustes Risiko-Heading + Umlautvarianten
-    risk_pat = r"(?im)^\s*Suizidalität\s*(?:&|und)\s*Risikoeinsch(?:ä|ae)tzung\s*$"
+    risk_pat = r"(?im)^\s*Suizidalität\s*(?:&|und)\s*Risikoeinsch(?:ä|ae)tzung\s$"
     need_risk_head = not re.search(risk_pat, status)
 
     def _has_tok(pat: str) -> bool:
@@ -859,13 +730,10 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
     payload["status_text"] = status
     return payload
 
+
 def generate_full_entries_german(
     user_input: str, context: Optional[Dict[str, Any]] = None
 ) -> Tuple[Dict[str, str], str]:
-    """
-    Erzeugt vier dokumentationsfertige Felder (Anamnese/Psychostatus/Einschätzung/Prozedere)
-    im AUSFÜHRLICHEN Erstbericht-Stil (Absätze, vollständige Sätze).
-    """
     context = context or {}
     try:
         path = resolve_red_flags_path(prefer_psych=True)
@@ -889,7 +757,7 @@ def generate_full_entries_german(
         "  5) Familiäre Anamnese \n"
         "- Status: **Psychostatus (heute)** als Absätze: Erscheinung/Verhalten; Sprache/Denken; Stimmung/Affekt; Wahrnehmung; Kognition/Orientierung.\n"
         "- Risiko: Abschnitt «Suizidalität & Risikoeinschätzung» explizit ausweisen (ja/nein/unklar) inkl. glaubhafter Erklärung zu **Distanzierungsfähigkeit**, **Absprachefähigkeit**, **Bündnisfähigkeit** kurz einordnen.\n"
-        "- Inhaltliche Regel: Wenn Suizidalität erwähnt wird, **integriere sie inhaltlich** in die «Aktuelle Anamnese» (keine Klammern im Titel), zusätzlich einen separaten Risiko-Abschnitt «Suizidalität & Risikoeinschätzung» anlegen.\n"
+        "- Inhaltliche Regel: Wenn Suizidalität erwähnt wird, **integriere sie inhaltlich** in die «Aktuelle Anamnese», zusätzlich einen separaten Risiko-Abschnitt «Suizidalität & Risikoeinschätzung» anlegen.\n"
         "- Einschätzung: differenzierte, ausführliche, psychologische Fallformulierung (Auslöser/aufrechterhaltende Faktoren/Ressourcen, Funktionsniveau) + Schweregrad (leicht/mittel/schwer) + Dringlichkeit (niedrig/mittel/hoch). 2–4 Alternativhypothesen, falls sinnvoll.\n"
         "- Prozedere: klare Bulletpoints (Interventionen, Sicherheit/Krisenplan, Einbezug Dritter nach Einwilligung, Verlauf/Kontrolle, Koordination; Medikation nur allgemein, ohne Dosierungen).\n"
         "- Antworte **ausschliesslich** als JSON:\n"
@@ -901,20 +769,15 @@ def generate_full_entries_german(
         "}\n"
     ).strip()
 
-    # --- Vorverarbeitung / Extraktion ---
-    # Falls der Nutzer schon Headings nutzt, holen wir "Anamnese" und "Status" separat.
     raw_anamnese = _extract_block(user_input, "Anamnese") or user_input
     raw_status   = _extract_block(user_input, "Status")   or ""
 
     clean_anamnese = _strip_top_level_headings(_strip_question_lines(raw_anamnese))
     clean_status   = _strip_top_level_headings(raw_status)
 
-    # LLM-gestützte Kategorisierung & Paraphrase der Anamnese
-    sec = categorize_anamnese_with_llm(free_text=clean_anamnese, gap_text="", status_hint=clean_status)
+    sec = categorize_anamnese_with_llm(free_text=clean_anamnese, status_hint=clean_status)
     anamnese_struct = _build_anamnese_from_sections(sec)
 
-
-    # NEU: deterministische Anamnese jetzt schon erstellen
     anamnese_router_text = _build_anamnese_from_router(clean_anamnese)
 
     result = _ask_openai_json(
@@ -924,85 +787,15 @@ def generate_full_entries_german(
         ]
     )
 
-    # Enforce + Fallback + Überschreiben der Anamnese durch unsere kategorisierte Version
     if isinstance(result, dict):
         result = _enforce_psych_erstgespraech_layout(result)
-        result["anamnese_text"] = anamnese_struct  # <-- HIER fixieren wir die gegliederte, paraphrasierte Anamnese
-
+        result["anamnese_text"] = anamnese_struct
         if red_flags_list:
             result["red_flags"] = red_flags_list
 
     full_block = _format_full_entries_block(result if isinstance(result, dict) else {})
     return result, full_block
 
-
-# ------------------ Anamnese → Zusatzfragen ------------------
-
-def generate_anamnese_gaptext_german(
-    anamnese_raw: str,
-    answered_context: Optional[str] = "",
-    humanize: bool = True,
-) -> Tuple[Dict[str, Any], str]:
-    """Erzeugt 2–5 gezielte, psychologisch relevante Zusatzfragen (kurz & patientenverständlich)."""
-
-    def _sys_msg_base() -> str:
-        return (
-            "Du bist erfahrener Psychologe in einer Schweizer Praxis.\n"
-            "Aufgabe: Analysiere den Freitext und formuliere **2–5 gezielte Zusatzfragen**, "
-            "um Anliegen, Schweregrad und Dringlichkeit einzugrenzen.\n"
-            "Fokus: Beginn/Verlauf; Auslöser/Belastung; Ressourcen/Schutzfaktoren; Funktionsniveau (Arbeit/Beziehung/Alltag); "
-            "Substanzkonsum; bisherige Behandlungen/Hilfen; **Risiko** (Suizidalität/Fremdgefährdung: ja/nein/unklar, Schutzfaktoren).\n"
-            "WICHTIG: keine Diagnosen, keine Testlisten — nur kurze, patientenverständliche Fragen.\n"
-            "Fasse Eingaben zusammen (paraphrasieren), transformiere Stichworte/Fragment-Sätze in vollständige Sätze. **Fragezeilen NICHT übernehmen**, sondern nur die inhaltlichen Antworten.\n"
-            "Antworte ausschliesslich als JSON:\n{\n  \"zusatzfragen\": [\"Frage 1\", \"Frage 2\"]\n}\n"
-        ).strip()
-
-    sys_msg = _sys_msg_base()
-
-    usr = {
-        "eingabe_freitext": anamnese_raw,
-        "bereits_beantwortet": answered_context or "",
-        "hinweise": "Priorisiere Risikoabschätzung und nächste sinnvolle Klärungsschritte.",
-    }
-
-    result = _ask_openai_json(
-        messages=[
-            {"role": "system", "content": sys_msg},
-            {"role": "user", "content": json.dumps(usr, ensure_ascii=False)},
-        ]
-    )
-
-    def _clean_list(xs: List[str]) -> List[str]:
-        seen: set[str] = set()
-        out: List[str] = []
-        for x in xs or []:
-            q = (x or "").strip()
-            if not q or q in seen:
-                continue
-            seen.add(q)
-            out.append(q)
-        return out
-
-    fragen_liste = _clean_list(result.get("zusatzfragen", []) if isinstance(result, dict) else [])
-    if len(fragen_liste) > 5:
-        fragen_liste = fragen_liste[:5]
-    if len(fragen_liste) < 2:
-        fallback = [
-            "Seit wann bestehen die Beschwerden und wie haben sie sich entwickelt?",
-            "Gibt es aktuell Suizidgedanken oder Gedanken, jemandem zu schaden?",
-            "Welche Situationen oder Gedanken verschlimmern bzw. bessern die Symptome?",
-            "Wie stark beeinträchtigen die Beschwerden Ihren Alltag (Arbeit, Beziehungen, Schlaf)?",
-            "Welche bisherigen Hilfen/Strategien haben etwas genutzt?",
-        ]
-        for q in fallback:
-            if len(fragen_liste) >= 2:
-                break
-            if q not in fragen_liste:
-                fragen_liste.append(q)
-
-    result = {"zusatzfragen": fragen_liste}
-    fragen_text = "\n".join(f"- {f}" for f in fragen_liste) if fragen_liste else anamnese_raw
-    return result, fragen_text
 
 # ------------------ Psychopathologischer Befund (Lückentext) ------------------
 
@@ -1011,7 +804,6 @@ def generate_status_gaptext_german(
     humanize: bool = True,
     phase: str = "initial",
 ) -> Tuple[Dict[str, Any], str]:
-    """Liefert psychologischen Status/Exploration als Lückentext/Checkliste (zum Ausfüllen)."""
     sys_msg = (
         "Du bist erfahrener Psychologe in einer Schweizer Praxis.\n"
         "Erzeuge eine strukturierte Liste **psychologischer Explorationspunkte** passend zur Anamnese. "
@@ -1076,7 +868,6 @@ def generate_assessment_and_plan_german(
     humanize: bool = True,
     phase: str = "initial",
 ) -> Tuple[str, str]:
-    """Erzeugt 'Einschätzung' (Hypothesen + Schweregrad/Dringlichkeit) und 'Prozedere' (Bulletpoints)."""
     try:
         path = resolve_red_flags_path(prefer_psych=True)
         red_flags_data = load_red_flags(path)
@@ -1098,7 +889,6 @@ def generate_assessment_and_plan_german(
         "red_flags": red_flags_list,
     }
 
-    # --- JSON-basiert statt Fliesstext-Split ---
     json_spec = (
         "Antworte ausschliesslich als JSON-Objekt mit genau diesen Schlüsseln:\n"
         "{\n"
@@ -1107,7 +897,7 @@ def generate_assessment_and_plan_german(
         "}\n"
         "- Strikte Trennung: Begründungen/Hypothesen/Dringlichkeit NUR in \"einschaetzung_text\".\n"
         "- In \"prozedere_text\" NUR umsetzbare Schritte, als Bulletliste.\n"
-        "- Gliedere das Prozedere in Abschnitte (Bullet als Abschnittstitel, KEINE Doppelpunkte), darunter 2–4 Unter-Bullets. "
+        "- Gliedere das Prozedere in Abschnitte (Bullet als Abschnittstitel, KEINE Doppelpunkte), darunter 2–4 Unter-Bullets. \n"
         "  - Setting & Ziele\n"
         "    - ...\n"
         "  - Psychoedukation\n"
@@ -1134,7 +924,6 @@ def generate_assessment_and_plan_german(
         "    - ...\n"
     )
 
-
     result = _ask_openai_json(
         messages=[
             {"role": "system", "content": sys_part + "\n\n" + json_spec},
@@ -1147,13 +936,11 @@ def generate_assessment_and_plan_german(
     beurteilung = (result.get("einschaetzung_text") or "").strip() if isinstance(result, dict) else ""
     prozedere   = (result.get("prozedere_text") or "").strip() if isinstance(result, dict) else ""
 
-    # Headings entfernen + Heuristik: rationale Sätze aus Prozedere zurück in Einschätzung
     beurteilung = _strip_heading_prefix(beurteilung, "Einschätzung")
     prozedere   = _strip_heading_prefix(prozedere,  "Prozedere")
     beurteilung, prozedere = _rectify_assessment_vs_plan(beurteilung, prozedere)
     prozedere = _ensure_grouped_plan(prozedere)
 
-    # Minimal-Fallback, falls das Modell kein Prozedere liefert
     if not prozedere:
         fallback = {
             "Setting & Ziele": [
@@ -1207,19 +994,15 @@ def generate_assessment_and_plan_german(
                     lines.append(f"  - {it}")
         prozedere = "\n".join(lines).strip()
 
-
     return beurteilung, prozedere
-
 
 
 __all__ = [
     "resolve_red_flags_path",
     "generate_full_entries_german",
-    "generate_anamnese_gaptext_german",
     "generate_status_gaptext_german",
     "generate_assessment_and_plan_german",
     "compose_erstbericht",
-    "format_anamnese_fliess_text",
     "reset_openai_client",
     "explain_plan_brief",
 ]
