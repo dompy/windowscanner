@@ -1066,7 +1066,7 @@ def generate_assessment_and_plan_german(
         "}\n"
         "- Strikte Trennung: Begründungen/Hypothesen/Dringlichkeit NUR in \"einschaetzung_text\".\n"
         "- In \"prozedere_text\" NUR umsetzbare Schritte, als Bulletliste.\n"
-        "- Gliedere das Prozedere als **Behandlungsplan** mit Abschnitten (Bullet als Abschnittstitel, KEINE Doppelpunkte), darunter 2–4 Unter-Bullets:\n"
+        "- Gliedere das Prozedere in Abschnitte (Bullet als Abschnittstitel, KEINE Doppelpunkte), darunter 2–4 Unter-Bullets. "
         "  - Setting & Ziele\n"
         "    - ...\n"
         "  - Psychoedukation\n"
@@ -1091,7 +1091,6 @@ def generate_assessment_and_plan_german(
         "    - ...\n"
         "  - Medikation (Koordination, ohne Dosierungen)\n"
         "    - ...\n"
-        "- Umfang flexibel (ca. 6–18 Unter-Bullets total), keine Begründungssätze im Plan."
     )
 
 
