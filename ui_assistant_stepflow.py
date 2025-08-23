@@ -1,7 +1,7 @@
 # ui_assistant_stepflow.py
-"""Tkinter-UI – Psychologie-Version
+"""Tkinter-UI – Psychologie-Version (Erstbericht-Stil)
 - Fragt beim Start den OPENAI_API_KEY per Dialog ab (maskiert) und speichert ihn prozesslokal; unter Windows optional persistent via setx.
-- In allen Actions (Buttons) Retry-Logik: Fehlt der Key oder ist er verloren gegangen, wird er nachgefordert und der jeweilige Call einmalig erneut ausgeführt.
+- In allen Actions Retry-Logik: Fehlt der Key oder ist er verloren gegangen, wird er nachgefordert und der jeweilige Call einmalig erneut ausgeführt.
 - Red Flags werden separat angezeigt (medizinische Regeln bevorzugt).
 - Unterstützt einen Headless-Smoketest via "--smoke-test" (für CI).
 """
@@ -16,7 +16,7 @@ from typing import Callable, Optional, Tuple
 
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, simpledialog, ttk
-from tkinter import font as tkfont 
+from tkinter import font as tkfont
 from psy_status_editor import open_status_editor
 from gpt_logic import (
     generate_anamnese_gaptext_german,
@@ -24,7 +24,7 @@ from gpt_logic import (
     generate_status_gaptext_german,
     generate_full_entries_german,
     resolve_red_flags_path,
-    format_anamnese_fliess_text,
+    compose_erstbericht,
 )
 
 try:
@@ -33,23 +33,13 @@ except Exception:
     load_red_flags = None  # type: ignore
     check_red_flags = None  # type: ignore
 
-
 # ---------- Utility: API-Key sicherstellen ----------
 
 def ensure_api_key(parent, *, force_prompt: bool = False) -> bool:
-    """
-    Stellt sicher, dass OPENAI_API_KEY gesetzt ist.
-    - force_prompt=True: erzwingt Abfrage auch wenn schon ein Key vorhanden ist (zum Erneuern).
-    - Setzt Key prozesslokal und unter Windows optional persistent (setx).
-    - Resettet den gecachten OpenAI-Client (gpt_logic.reset_openai_client), damit der neue Key sofort genutzt wird.
-    """
     current = (os.getenv("OPENAI_API_KEY") or "").strip()
-
     if not force_prompt and current:
         return True
 
-    # Dialog (maskiert)
-    from tkinter import simpledialog, messagebox
     new_key = simpledialog.askstring(
         "OpenAI API Key",
         "Bitte OpenAI API Key eingeben:",
@@ -60,7 +50,6 @@ def ensure_api_key(parent, *, force_prompt: bool = False) -> bool:
         if not current:
             messagebox.showwarning("Fehlender Key", "Ohne OpenAI API Key kann die App nicht arbeiten.")
             return False
-        # Abbruch, aber alter Key bleibt aktiv
         return True
 
     new_key = new_key.strip()
@@ -68,10 +57,7 @@ def ensure_api_key(parent, *, force_prompt: bool = False) -> bool:
         messagebox.showwarning("Fehlender Key", "Ohne OpenAI API Key kann die App nicht arbeiten.")
         return False
 
-    # prozesslokal sofort verfügbar
     os.environ["OPENAI_API_KEY"] = new_key
-
-    # Windows: persistent speichern (für nächste Starts)
     try:
         if os.name == "nt":
             subprocess.run(["setx", "OPENAI_API_KEY", new_key], check=False,
@@ -79,16 +65,13 @@ def ensure_api_key(parent, *, force_prompt: bool = False) -> bool:
     except Exception:
         pass
 
-    # OpenAI-Client-Cache leeren, damit der neue Key sofort verwendet wird
     try:
-        from gpt_logic import reset_openai_client  # lazy import, falls Modul noch nicht geladen
+        from gpt_logic import reset_openai_client  # lazy import
         reset_openai_client()
     except Exception:
         pass
 
     return True
-
-
 
 # ---------- Headless-Smoke-Test (für CI/Actions) ----------
 
@@ -111,7 +94,6 @@ def _smoke_test() -> int:
         print(json.dumps({"ok": False, "error": str(e)}))
         return 1
 
-
 def _subheading(self, parent: tk.Misc, text: str):
     tk.Label(parent, text=text, fg="white", bg="#222", anchor="w",
              font=("Arial", 10, "bold")).pack(fill="x")
@@ -120,18 +102,16 @@ class ConsultationAssistant:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("🩺 Pezzi PsyMate")
-        self.root.geometry("1000x820")
+        self.root.state("zoomed")
         self.root.configure(bg="#222")
 
-        # ttk-Theme & Button-Style (flach, cross-platform)
         self.style = ttk.Style()
         try:
-            self.style.theme_use("clam")   # erlaubt Farbanpassungen auch auf macOS
+            self.style.theme_use("clam")
         except Exception:
             pass
 
-        self.text_font = tkfont.Font(family="Arial", size=16)  # zentrale Textschrift
-
+        self.text_font = tkfont.Font(family="Arial", size=16)
 
         self.style.configure(
             "Primary.TButton",
@@ -161,32 +141,31 @@ class ConsultationAssistant:
         m_view.add_command(label="Schrift zurücksetzen", command=lambda: self._set_text_font(12))
         menubar.add_cascade(label="Ansicht", menu=m_view)
 
-        # praktische Shortcuts
         self.root.bind("<Control-plus>",  lambda e: self._change_text_font(+1))
-        self.root.bind("<Control-KP_Add>",lambda e: self._change_text_font(+1))  # Numpad +
+        self.root.bind("<Control-KP_Add>",lambda e: self._change_text_font(+1))
         self.root.bind("<Control-minus>", lambda e: self._change_text_font(-1))
         self.root.bind("<Control-KP_Subtract>", lambda e: self._change_text_font(-1))
         self.root.bind("<Control-0>",     lambda e: self._set_text_font(12))
 
         # Anamnese (frei)
-        self._label("Anamnese")
+        self._label("Anamnese (frei, Patientenstimme erlaubt)")
         self.fields["Anamnese"] = self._text(height=6)
 
         # Zusatzfragen
-        self._button("Anamnese erweitern", self.on_gaptext)
-        self._label("Erweiterte Anamnese")
+        self._button("Anamnese erweitern (Fragen vorschlagen)", self.on_gaptext)
+        self._label("Erweiterte Anamnese (Antworten / Stichworte)")
         self.txt_gap = self._text(height=6)
 
         # Psychostatus
         bar = tk.Frame(self.root, bg="#222")
         bar.pack(fill="x", padx=8, pady=(6, 4))
-        self._button("Psychopathologischen Status erheben", self.on_psychostatus, parent=bar)
+        self._button("Psychopathologischen Status eingeben", self.on_psychostatus, parent=bar)
 
-        self._label("Status Freitext")
+        self._label("Psychostatus (Freitext)")
         self.fields["Status"] = self._text(height=3)
 
         # Einschätzung + Prozedere
-        self._button("Einschätzung + Prozedere", self.on_finalize)
+        self._button("Einschätzung + Prozedere generieren", self.on_finalize)
 
         cols = tk.Frame(self.root, bg="#222")
         cols.pack(fill="both", expand=True, padx=8)
@@ -196,10 +175,10 @@ class ConsultationAssistant:
         right.pack(side="left", fill="both", expand=True, padx=(4, 0))
 
         self._label("Einschätzung", parent=left)
-        self.fields["Einschätzung"] = self._text(parent=left, height=8, expand=True)   
+        self.fields["Einschätzung"] = self._text(parent=left, height=8, expand=True)
 
         self._label("Empfohlenes Prozedere", parent=right)
-        self.fields["Prozedere"] = self._text(parent=right, height=8, expand=True)     
+        self.fields["Prozedere"] = self._text(parent=right, height=8, expand=True)
 
         # Red Flags
         self._label("⚠️ Red Flags (Info, nicht in den Feldern)")
@@ -209,11 +188,11 @@ class ConsultationAssistant:
         # Utilities
         util = tk.Frame(self.root, bg="#222")
         util.pack(fill="x", padx=8, pady=(6, 0))
-        self._button("Alles generieren", self.on_generate_full_direct, parent=util, side="left")
+        self._button("Alles generieren (Erstbericht)", self.on_generate_full_direct, parent=util, side="left")
         self._button("Gesamtausgabe kopieren", self.copy_output, parent=util, side="left")
         self._button("Reset", self.reset_all, parent=util, side="left")
 
-        self._label("Gesamtausgabe")
+        self._label("Gesamtausgabe (Erstbericht)")
         self.output_full = self._text(height=15, expand=True)
 
     # ---------- UI helpers ----------
@@ -224,7 +203,6 @@ class ConsultationAssistant:
             font=("Arial", size, "bold")
         ).pack(fill="x", padx=8 if parent is self.root else 0, pady=(8, 0))
 
-
     def _text(self, height=6, parent: Optional[tk.Misc] = None, expand: bool = False) -> scrolledtext.ScrolledText:
         parent = parent or self.root
         t = scrolledtext.ScrolledText(
@@ -232,18 +210,17 @@ class ConsultationAssistant:
             bg="#111", fg="white", insertbackground="white",
             font=self.text_font
         )
-        t.pack(fill="both", expand=expand, padx=8, pady=(4, 4))  # ⬅️ expand nutzen
+        t.pack(fill="both", expand=expand, padx=8, pady=(4, 4))
         return t
 
     def _change_text_font(self, delta: int):
         size = int(self.text_font.cget("size")) + delta
-        size = max(8, min(28, size))  # Grenzen
+        size = max(8, min(28, size))
         self.text_font.configure(size=size)
 
     def _set_text_font(self, size: int):
         size = max(8, min(28, int(size)))
         self.text_font.configure(size=size)
-
 
     def _button(self, label: str, cmd: Callable[[], None],
                 parent: Optional[tk.Misc] = None, side: Optional[str] = None):
@@ -256,19 +233,16 @@ class ConsultationAssistant:
             btn.pack(padx=pad_x, pady=(6, 0), anchor="w")
         return btn
 
-
     # ---------- Gemeinsamer Retry-Wrapper ----------
-    def _call_with_key_retry(self, action_name: str, fn: Callable[[], Tuple[Optional[dict], Optional[str]] | Tuple[str, str] | str | None]):
-        """Führt einen OpenAI-Call aus und fragt bei fehlendem Key einmalig nach (Retry)."""
+    def _call_with_key_retry(self, action_name: str, fn: Callable[[], Tuple[Optional[dict], Optional[str]] | Tuple[str, str] | Tuple[dict, str] | str | None]):
         try:
             return fn()
         except EnvironmentError as e:
-            # typischer Text aus gpt_logic._get_openai_client()
             if "OPENAI_API_KEY" in str(e):
                 if ensure_api_key(self.root):
                     try:
                         return fn()
-                    except Exception as e2:  # zweiter Fehler → zeigen
+                    except Exception as e2:
                         messagebox.showerror("Fehler", f"{action_name} fehlgeschlagen:\n{e2}")
                         return None
                 else:
@@ -341,70 +315,112 @@ class ConsultationAssistant:
         self.fields["Status"].delete("1.0", tk.END)
         self.fields["Status"].insert(tk.END, text)
 
-
-
     def on_finalize(self):
-        anamnese_final = self.txt_gap.get("1.0", tk.END).strip() or self.fields["Anamnese"].get("1.0", tk.END).strip()
+        anamnese_raw = self.fields["Anamnese"].get("1.0", tk.END).strip()
+        gap_raw = self.txt_gap.get("1.0", tk.END).strip()
+
+        # Fragen raus, Antwort hinter '?' behalten
+        def _answers_only(s: str) -> str:
+            import re
+            out = []
+            s = s.replace("\r\n", "\n")
+            s = re.sub(r"\?(?:n|j)(\s|$)", "?\n", s)  # '?n'/'?j' Artefakte
+            for raw in s.splitlines():
+                ln = raw.strip()
+                if not ln:
+                    out.append(raw); continue
+                m = re.match(r"^\s*[–\-•]?\s*(.+?)\?\s*(.*)$", ln)
+                if m:  # Frage + evtl. Antwort
+                    tail = (m.group(2) or "").strip()
+                    if tail:
+                        out.append(tail)
+                    continue
+                if re.match(r"^[^:]+?\?\s*$", ln):  # reine Fragezeile
+                    continue
+                out.append(raw)
+            txt = "\n".join(out)
+            return re.sub(r"\n{3,}", "\n\n", txt).strip()
+
+        anamnese_final = "\n\n".join(x for x in (anamnese_raw, _answers_only(gap_raw)) if x).strip()
         status_final = self.fields["Status"].get("1.0", tk.END).strip()
         if not anamnese_final:
             messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese/Lückentext erstellen.")
             return
 
-        def _do():
-            einschätzung, prozedere = generate_assessment_and_plan_german(anamnese_final, status_final)
-            return einschätzung, prozedere
+        # 2) Einschätzung + Prozedere generieren (für UI-Felder)
+        def _do_assess():
+            einsch, proz = generate_assessment_and_plan_german(anamnese_final, status_final)
+            return einsch, proz
 
-        result = self._call_with_key_retry("Finalisierung", _do)
-        if not result:
+        res = self._call_with_key_retry("Finalisierung", _do_assess)
+        if not res:
             return
-        einschätzung, prozedere = result  # type: ignore[misc]
-
+        einschätzung, prozedere = res  # type: ignore[misc]
         self.fields["Einschätzung"].delete("1.0", tk.END)
         self.fields["Einschätzung"].insert(tk.END, einschätzung or "")
         self.fields["Prozedere"].delete("1.0", tk.END)
         self.fields["Prozedere"].insert(tk.END, prozedere or "")
 
+        # 3) Red Flags updaten
         self.update_red_flags(anamnese_final, status_final)
+
+        # 4) Standardisierte Erstbericht-Ausgabe bauen (immer gleich formatiert)
         self.build_output(anamnese_final, status_final, einschätzung, prozedere)
 
     def on_generate_full_direct(self):
+        # Roh-Kombination aus den Feldern (robust gegen Reihenfolge)
         parts: list[str] = []
         anamnese_raw = self.fields["Anamnese"].get("1.0", tk.END).strip()
-        gap = self.txt_gap.get("1.0", tk.END).strip()
-        anamnese_src = gap or anamnese_raw
-        if anamnese_src:
-            parts.append("Anamnese: " + anamnese_src)
+        gap_raw = self.txt_gap.get("1.0", tk.END).strip()
 
+        # nur Antworten/Stichworte aus dem Gap-Feld, keine reinen Fragezeilen
+        def _answers_only(s: str) -> str:
+            import re
+            out = []
+            for ln in (s or "").splitlines():
+                if re.match(r"^\s*-\s+.+\?\s*$", ln):  # Bullet-Frage
+                    continue
+                if re.match(r"^\s*.+\?\s*$", ln):      # Fragezeile
+                    continue
+                out.append(ln)
+            return "\n".join(out).strip()
+
+        answers_only = _answers_only(gap_raw)
+        anamnese_src = "\n\n".join(x for x in (anamnese_raw, answers_only) if x).strip()
         bef = self.fields["Status"].get("1.0", tk.END).strip()
         beu = self.fields["Einschätzung"].get("1.0", tk.END).strip()
         proz = self.fields["Prozedere"].get("1.0", tk.END).strip()
-        if bef:
-            parts.append("Status: " + bef)
-        if beu:
-            parts.append("Einschätzung: " + beu)
-        if proz:
-            parts.append("Prozedere: " + proz)
 
-        combined = "\n".join(parts).strip() or (anamnese_src or "")
+        if anamnese_src:
+            parts.append("Anamnese\n " + anamnese_src)
+        if bef:
+            parts.append("Status\n " + bef)
+        if beu:
+            parts.append("Einschätzung\n " + beu)
+        if proz:
+            parts.append("Prozedere\n " + proz)
+
+        combined = "\n\n".join(parts).strip() or (anamnese_src or "")
         if not combined:
             messagebox.showwarning("Hinweis", "Bitte Anamnese im Tool eingeben.")
             return
 
         def _do():
-            payload, full_block = generate_full_entries_german(combined, context={})
-            return payload, full_block
+            payload, _full_block = generate_full_entries_german(combined, context={})
+            return payload, compose_erstbericht(payload)
 
         result = self._call_with_key_retry("Vollgenerierung", _do)
         if not result:
             return
-        payload, full_block = result  # type: ignore[misc]
+        payload, final_report = result  # type: ignore[misc]
 
+        # Felder normiert befüllen
         self.fields["Anamnese"].delete("1.0", tk.END)
         self.fields["Anamnese"].insert(tk.END, (payload.get("anamnese_text") or ""))
         self.fields["Status"].delete("1.0", tk.END)
         self.fields["Status"].insert(tk.END, (payload.get("status_text") or ""))
         self.fields["Einschätzung"].delete("1.0", tk.END)
-        self.fields["Einschätzung"].insert(tk.END, (payload.get("einschätzung_text") or ""))
+        self.fields["Einschätzung"].insert(tk.END, (payload.get("beurteilung_text") or ""))
         self.fields["Prozedere"].delete("1.0", tk.END)
         self.fields["Prozedere"].insert(tk.END, (payload.get("prozedere_text") or ""))
 
@@ -412,7 +428,7 @@ class ConsultationAssistant:
         self.set_red_flags(rf)
 
         self.output_full.delete("1.0", tk.END)
-        self.output_full.insert(tk.END, full_block)
+        self.output_full.insert(tk.END, final_report)
 
     # ---------- Red Flags ----------
     def update_red_flags(self, anamnese_text: str, status_text: str):
@@ -435,30 +451,30 @@ class ConsultationAssistant:
         self.txt_redflags.configure(state="disabled")
 
     def build_output(self, anamnese: str, status: str, einschätzung: str, prozedere: str):
-        # Anamnese hübsch machen: Freitext + evtl. erweiterte Anamnese (Bullets) -> EIN Absatz
-        gap = getattr(self, "txt_gap", None)
-        gap_text = gap.get("1.0", tk.END).strip() if gap else ""
-        pretty_ana = anamnese or ""
+        """
+        Baut IMMER den standardisierten Erstbericht via generate_full_entries_german + compose_erstbericht.
+        So bleibt die Ausgabe konsistent (Absätze, Überschriften).
+        """
+        parts: list[str] = []
+        if anamnese:
+            parts.append("Anamnese\n " + anamnese)
+        if status:
+            parts.append("Status\n " + status)
+        if einschätzung:
+            parts.append("Einschätzung\n " + einschätzung)
+        if prozedere:
+            parts.append("Prozedere\n " + prozedere)
+        combined = "\n\n".join(parts).strip()
 
         def _do():
-            return format_anamnese_fliess_text(anamnese, gap_text)
+            payload, _block = generate_full_entries_german(combined, context={})
+            return compose_erstbericht(payload)
 
-        result = self._call_with_key_retry("Anamnese formatieren", _do)
-        if isinstance(result, str) and result.strip():
-            pretty_ana = result.strip()
-        else:
-            # Offline/Fehler → lokaler Fallback ohne LLM
-            pretty_ana = self._fallback_anamnese_local(anamnese, gap_text)
+        result = self._call_with_key_retry("Erstbericht generieren", _do)
+        final_report = result if isinstance(result, str) else combined
 
-        parts: list[str] = [
-            pretty_ana or "keine Angaben", "",
-            status or "Status: nicht erhoben", "",
-            einschätzung or "keine Angaben", "",
-            prozedere or "keine Angaben",
-        ]
         self.output_full.delete("1.0", tk.END)
-        self.output_full.insert(tk.END, "\n".join(parts).strip())
-
+        self.output_full.insert(tk.END, final_report)
 
     def copy_output(self):
         text = self.output_full.get("1.0", tk.END)
@@ -477,44 +493,18 @@ class ConsultationAssistant:
     def on_change_api_key(self):
         if ensure_api_key(self.root, force_prompt=True):
             messagebox.showinfo("OK", "API-Key wurde aktualisiert.")
-    
-    
-# ---------- Fallback für offline Gebrauch ----------
 
-    def _fallback_anamnese_local(self, freitext: str, gaptext: str) -> str:
-        import re
-        parts = []
-        ft = (freitext or "").strip()
-        if ft:
-            if not ft.endswith((".", "!", "?")):
-                ft = ft.rstrip() + "."
-            parts.append(ft)
-        for raw in (gaptext or "").splitlines():
-            line = raw.strip()
-            if not line:
-                continue
-            line = re.sub(r"^\s*[–-]\s*", "", line)
-            line = re.sub(r"\?\s*ja\s*$", " (bejaht).", line)
-            line = re.sub(r"\?\s*nein\s*$", " (verneint).", line)
-            if not line.endswith((".", "!", "?")):
-                line += "."
-            parts.append(line)
-        return " ".join(parts).strip()
-            
 def main():
     if "--smoke-test" in sys.argv:
         sys.exit(_smoke_test())
 
     root = tk.Tk()
-
-    # Key beim Start sicherstellen (Dialog erscheint nur, wenn nötig)
     if not ensure_api_key(root):
         root.destroy()
         sys.exit(1)
 
     app = ConsultationAssistant(root)
     root.mainloop()
-
 
 if __name__ == "__main__":
     main()
