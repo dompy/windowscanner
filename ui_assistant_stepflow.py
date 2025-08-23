@@ -20,11 +20,12 @@ from tkinter import font as tkfont
 from psy_status_editor import open_status_editor
 from gpt_logic import (
     generate_anamnese_gaptext_german,
-    generate_assessment_and_plan_german,
+    generate_assessment_and_plan_german,   # darf bleiben, wird hier aber gleich nicht mehr benutzt
     generate_status_gaptext_german,
     generate_full_entries_german,
     resolve_red_flags_path,
     compose_erstbericht,
+    explain_plan_brief,                   
 )
 
 try:
@@ -181,7 +182,7 @@ class ConsultationAssistant:
         self.fields["Prozedere"] = self._text(parent=right, height=8, expand=True)
 
         # Red Flags
-        self._label("⚠️ Red Flags (Info, nicht in den Feldern)")
+        self._label("⚠️ Red Flags")
         self.txt_redflags = self._text(height=4)
         self.txt_redflags.configure(state="disabled")
 
@@ -316,56 +317,45 @@ class ConsultationAssistant:
         self.fields["Status"].insert(tk.END, text)
 
     def on_finalize(self):
-        anamnese_raw = self.fields["Anamnese"].get("1.0", tk.END).strip()
-        gap_raw = self.txt_gap.get("1.0", tk.END).strip()
-
-        # Fragen raus, Antwort hinter '?' behalten
-        def _answers_only(s: str) -> str:
-            import re
-            out = []
-            s = s.replace("\r\n", "\n")
-            s = re.sub(r"\?(?:n|j)(\s|$)", "?\n", s)  # '?n'/'?j' Artefakte
-            for raw in s.splitlines():
-                ln = raw.strip()
-                if not ln:
-                    out.append(raw); continue
-                m = re.match(r"^\s*[–\-•]?\s*(.+?)\?\s*(.*)$", ln)
-                if m:  # Frage + evtl. Antwort
-                    tail = (m.group(2) or "").strip()
-                    if tail:
-                        out.append(tail)
-                    continue
-                if re.match(r"^[^:]+?\?\s*$", ln):  # reine Fragezeile
-                    continue
-                out.append(raw)
-            txt = "\n".join(out)
-            return re.sub(r"\n{3,}", "\n\n", txt).strip()
-
-        anamnese_final = "\n\n".join(x for x in (anamnese_raw, _answers_only(gap_raw)) if x).strip()
-        status_final = self.fields["Status"].get("1.0", tk.END).strip()
+        anamnese_final = self.txt_gap.get("1.0", tk.END).strip() or self.fields["Anamnese"].get("1.0", tk.END).strip()
+        status_final   = self.fields["Status"].get("1.0", tk.END).strip()
         if not anamnese_final:
             messagebox.showwarning("Hinweis", "Bitte zuerst Anamnese/Lückentext erstellen.")
             return
 
-        # 2) Einschätzung + Prozedere generieren (für UI-Felder)
-        def _do_assess():
-            einsch, proz = generate_assessment_and_plan_german(anamnese_final, status_final)
-            return einsch, proz
+        # 1) EINMAL die standardisierte Voll-Generierung; daraus füttern wir alle Felder
+        def _do_full():
+            combo = "Anamnese\n " + anamnese_final
+            if status_final:
+                combo += "\n\nStatus\n " + status_final
+            payload, _ = generate_full_entries_german(combo, context={})
+            # Oberes UI-Prozedere = derselbe Plan wie im Erstbericht, optional mit Kurzbegründungen
+            proz_ui = explain_plan_brief(
+                payload.get("prozedere_text", ""),
+                anamnese=anamnese_final,
+                status=status_final,
+                einschaetzung=payload.get("beurteilung_text", "")
+            )
+            return payload, proz_ui
 
-        res = self._call_with_key_retry("Finalisierung", _do_assess)
+        res = self._call_with_key_retry("Finalisierung", _do_full)
         if not res:
             return
-        einschätzung, prozedere = res  # type: ignore[misc]
-        self.fields["Einschätzung"].delete("1.0", tk.END)
-        self.fields["Einschätzung"].insert(tk.END, einschätzung or "")
-        self.fields["Prozedere"].delete("1.0", tk.END)
-        self.fields["Prozedere"].insert(tk.END, prozedere or "")
+        payload, proz_ui = res
 
-        # 3) Red Flags updaten
+        # 2) UI-Felder aus demselben Payload bestücken (Konsistenz!)
+        self.fields["Einschätzung"].delete("1.0", tk.END)
+        self.fields["Einschätzung"].insert(tk.END, payload.get("beurteilung_text") or "")
+
+        self.fields["Prozedere"].delete("1.0", tk.END)
+        self.fields["Prozedere"].insert(tk.END, proz_ui or (payload.get("prozedere_text") or ""))
+
+        # 3) Red Flags & Erstbericht
         self.update_red_flags(anamnese_final, status_final)
 
-        # 4) Standardisierte Erstbericht-Ausgabe bauen (immer gleich formatiert)
-        self.build_output(anamnese_final, status_final, einschätzung, prozedere)
+        final_report = compose_erstbericht(payload)
+        self.output_full.delete("1.0", tk.END)
+        self.output_full.insert(tk.END, final_report)
 
     def on_generate_full_direct(self):
         # Roh-Kombination aus den Feldern (robust gegen Reihenfolge)

@@ -154,6 +154,47 @@ def _rectify_assessment_vs_plan(einsch: str, proz: str) -> tuple[str, str]:
     new_proz   = "\n".join(kept).strip()
     return new_einsch, new_proz
 
+def explain_plan_brief(
+    plan_text: str,
+    *,
+    anamnese: str = "",
+    status: str = "",
+    einschaetzung: str = "",
+    max_words: int = 12,
+) -> str:
+    """
+    Hängt an JEDES Unter-Bullet (Zeilen, die mit '  - ' beginnen) eine sehr kurze
+    Begründung an: ' – warum: …'. Struktur sonst unverändert lassen.
+    Gibt bei Fehlern einfach den Original-Plan zurück.
+    """
+    plan = (plan_text or "").strip()
+    if not plan:
+        return plan
+
+    sys_msg = (
+        "Du bist erfahrener Psychiater in einer Schweizer Praxis. "
+        "Aufgabe: Nimm den gegebenen Plan-Text (Bullets/Unter-Bullets) und füge "
+        "an JEDE Unter-Bullet-Zeile eine kurze Begründung an, z.B. ' – warum: Schlaf stabilisieren'. "
+        f"Max {max_words} Wörter pro Begründung. "
+        "WICHTIG: Struktur UNVERÄNDERT lassen (gleiche Zeilen, gleiche Reihenfolge), "
+        "keine neuen Titel/Abschnitte einfügen, nichts löschen, keine Doppelpunkte nach Abschnittstiteln. "
+        "Gib NUR den transformierten Plan-Text zurück."
+    )
+    usr = {
+        "plan": plan,
+        "kontext": {
+            "anamnese": anamnese,
+            "status": status,
+            "einschaetzung": einschaetzung,
+        },
+    }
+    try:
+        out = ask_openai(sys_msg + "\n\n" + json.dumps(usr, ensure_ascii=False))
+        out = (out or "").strip()
+        return out or plan
+    except Exception:
+        return plan
+
 def _extract_block(text: str, head: str) -> str:
     """Extrahiert den Block nach einer Top-Überschrift bis zur nächsten Top-Überschrift."""
     if not text:
@@ -551,7 +592,7 @@ def swiss_erstbericht_style(humanize: bool = True) -> str:
         "Schweizer Orthografie (ss statt ß). "
         "Ausführlicher, detaillierter Erstbericht in vollständigen Sätzen; klinisch-sachlich, präzise, ohne Floskeln. "
         "Klare Gliederung: Eintrittssituation; Aktuelle Anamnese (inkl. Suizidalität); Hintergrundanamnese; "
-        "Soziale Anamnese; Familiäre Anamnese; Psychostatus (heute); Suizidalität inkl. glaubhafter Erklärung & Risikoeinschätzung; "
+        "Soziale Anamnese; Familiäre Anamnese (alle Familien bezogenen Infos); Psychostatus (heute); Suizidalität inkl. glaubhafter Erklärung & Risikoeinschätzung; "
         "Differenzierte Einschätzung (Distanzierungs-/Absprache-/Bündnisfähigkeit integrieren); Prozedere. "
         "Wörtliche Patienten-Zitate sparsam einstreuen und mit «…» kennzeichnen. "
         "Keine Aufzählungslisten, ausser im Abschnitt «Prozedere»."
@@ -1180,4 +1221,5 @@ __all__ = [
     "compose_erstbericht",
     "format_anamnese_fliess_text",
     "reset_openai_client",
+    "explain_plan_brief",
 ]
