@@ -155,11 +155,18 @@ def explain_plan_brief(
 
     sys_msg = (
         "Du bist erfahrener Psychiater in einer Schweizer Praxis. "
-        "Aufgabe: Nimm den gegebenen Plan-Text (Bullets/Unter-Bullets) und füge "
-        "an JEDE Unter-Bullet-Zeile eine kurze Begründung an, z.B. ' – warum: Schlaf stabilisieren'. "
-        f"Max {max_words} Wörter pro Begründung. "
-        "WICHTIG: Struktur UNVERÄNDERT lassen (gleiche Zeilen, gleiche Reihenfolge), "
-        "keine neuen Titel/Abschnitte einfügen, nichts löschen, keine Doppelpunkte nach Abschnittstiteln. "
+        "Transformiere den gegebenen Behandlungsplan, aber BEWAHRE strikt die Struktur: "
+        "Abschnitts-Bullets und Unter-Bullets, Reihenfolge, Einrückung und Zeilenumbrüche müssen unverändert bleiben. "
+        "Füge NUR DORT eine sehr kurze, kontextgestützte Erläuterung am Ende von Unter-Bullets an, "
+        "wo dies das Verständnis verbessert (Ziel/Indikation/Bezug zur Anamnese/Risiko). "
+        "Wenn die Massnahme selbsterklärend ist oder keine belastbare Begründung aus dem Kontext ableitbar ist, "
+        "DANN KEINE Ergänzung. "
+        "Form der Ergänzung: „ – {kurzer Grund}“, OHNE das Wort „warum“, keine Punkte am Ende, "
+        f"maximal {max_words} Wörter. "
+        "Im Durchschnitt höchstens 1–2 Ergänzungen pro Abschnitt. "
+        "Keine neuen Abschnitte/Bullets, nichts löschen, keine Umformulierungen der Massnahmen, keine Dosierungen. "
+        "Keine Halluzinationen: Stütze dich ausschliesslich auf den mitgelieferten Kontext (Anamnese/Status/Einschätzung). "
+        "Sprache: Schweizer Orthografie, klinisch-sachlich. "
         "Gib NUR den transformierten Plan-Text zurück."
     )
     usr = {
@@ -176,6 +183,7 @@ def explain_plan_brief(
         return out or plan
     except Exception:
         return plan
+
 
 
 def _extract_block(text: str, head: str) -> str:
@@ -207,6 +215,9 @@ def categorize_anamnese_with_llm(free_text: str, status_hint: str = "") -> Dict[
         "in vollständigen Sätzen, ohne Fragen/Listenstil. Schweizer Orthografie (ss). "
         "Nutze Angaben aus dem Psychostatus nur zur Kontextualisierung (z. B. Verlauf, Glaubhaftigkeit), "
         "übernimm aber keine Status-Beobachtungen in die Anamnese. Fehlende Informationen -> 'keine Angaben'."
+        "Jede Erwähnung von Personen, zu denen der Patient eine Haltung äussert "
+        "(z. B. Freundin/Freund, „mag“, „schreibt mit“, „Kontakt zu …“ – auch online/virtuell), "
+        "ist in der Rubrik «Soziale Anamnese» als sozialer Kontakt aufzuführen."
     )
 
     user_payload = {
@@ -420,7 +431,7 @@ def _paraphrase_bucket_llm(heading: str, raw_text: str) -> str:
     try:
         sys_msg = (
             "Du bist erfahrener Psychologe in einer Schweizer Praxis. "
-            "Formuliere den folgenden Notiz-/Stichwort-Text kurz um: 2–4 Sätze, "
+            "Formuliere den folgenden Notiz-/Stichwort-Text kurz um: 2–6 Sätze, "
             "3. Person (die Patientin/der Patient), klinisch-sachlich, präzise, CH-Orthografie. "
             "Keine neuen Informationen erfinden, keine Listen, keine Zitate."
         )
@@ -529,9 +540,9 @@ def _ask_openai_json(*, messages: List[Dict[str, str]], model: str = MODEL_DEFAU
         return {"raw_text": content}
 
 
-def swiss_erstbericht_style(humanize: bool = True) -> str:
-    base = (
-        "Schweizer Orthografie (ss statt ß). "
+def swiss_erstbericht_style() -> str:
+    return (
+        "Schweizer Orthografie (IMMER ss statt ß). "
         "Ausführlicher, detaillierter Erstbericht in vollständigen Sätzen; klinisch-sachlich, präzise, ohne Floskeln. "
         "Klare Gliederung: Eintrittssituation; Aktuelle Anamnese; Hintergrundanamnese; "
         "Soziale Anamnese; Familiäre Anamnese; Psychostatus (heute); Suizidalität inkl. glaubhafter Erklärung & Risikoeinschätzung; "
@@ -539,27 +550,27 @@ def swiss_erstbericht_style(humanize: bool = True) -> str:
         "Wörtliche Patienten-Zitate sparsam einstreuen und mit «…» kennzeichnen. "
         "Keine Aufzählungslisten, ausser im Abschnitt «Prozedere»."
     )
-    if humanize:
-        base += " Ton: menschlich, respektvoll, aber fachlich."
-    return base
-
 
 def _format_full_entries_block(payload: Dict[str, Any]) -> str:
     parts: List[str] = []
     parts.append("Anamnese")
     parts.append((payload.get("anamnese_text") or "keine Angaben").strip())
     parts.append("")
-    parts.append("Status")
-    parts.append((payload.get("status_text") or "keine Angaben").strip())
-    parts.append("")
+
+    status = (payload.get("status_text") or "").strip()
+    if status:                                  # <<< nur dann anzeigen
+        parts.append("Status")
+        parts.append(status)
+        parts.append("")
+
     parts.append("Einschätzung")
     parts.append((payload.get("beurteilung_text") or "keine Angaben").strip())
     parts.append("")
     parts.append("Prozedere")
     parts.append((payload.get("prozedere_text") or "keine Angaben").strip())
+
     txt = "\n".join(parts).strip()
     return _normalize_headings_to_spaces(txt)
-
 
 def compose_erstbericht(payload: Dict[str, Any]) -> str:
     ana = (payload.get("anamnese_text") or "").strip()
@@ -595,13 +606,13 @@ def _normalize_headings_to_spaces(text: str, spaces: int = HEADING_SPACES) -> st
         i = 0
         while i < len(lines):
             ln = lines[i]
-            m = re.match(fr"^\s*({heads_alt})\s*:?\s$", ln, flags=re.IGNORECASE)
+            m = re.match(fr"^\s*({heads_alt})\s*:?\s*$", ln, flags=re.IGNORECASE)
             if m:
                 head = m.group(1)
                 j = i + 1
                 while j < len(lines) and lines[j].strip() == "":
                     j += 1
-                if j < len(lines) and not re.match(fr"^\s*(?:{heads_alt})\s*:?\s$", lines[j], re.IGNORECASE):
+                if j < len(lines) and not re.match(fr"^\s*(?:{heads_alt})\s*:?\s*$", lines[j], re.IGNORECASE):
                     out.append(head)
                     out.append(lines[j].strip())
                     i = j + 1
@@ -621,13 +632,13 @@ def _normalize_headings_to_spaces(text: str, spaces: int = HEADING_SPACES) -> st
     i = 0
     while i < len(lines):
         ln = lines[i]
-        m = re.match(fr"^\s*({heads_alt})\s*:?\s$", ln, flags=re.IGNORECASE)
+        m = re.match(fr"^\s*({heads_alt})\s*:?\s*$", ln, flags=re.IGNORECASE)
         if m:
             head = m.group(1)
             j = i + 1
             while j < len(lines) and lines[j].strip() == "":
                 j += 1
-            if j < len(lines) and not re.match(fr"^\s*(?:{heads_alt})\s*:?\s$", lines[j], re.IGNORECASE):
+            if j < len(lines) and not re.match(fr"^\s*(?:{heads_alt})\s*:?\s*$", lines[j], re.IGNORECASE):
                 out.append(f"{head}{S}{lines[j].strip()}")
                 i = j + 1
             else:
@@ -657,7 +668,7 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
         text = (text or "").strip()
         if not text:
             return {}
-        head_pat = r"(?im)^(?P<h>(?:{alts}))\s*:?\s$".format(
+        head_pat = r"(?im)^(?P<h>(?:{alts}))\s*:?\s*$".format(
             alts="|".join(f"(?:{pat})" for _, pat in CANON)
         )
         parts: Dict[str, str] = {}
@@ -685,7 +696,7 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
 
     anamnese_in = payload.get("anamnese_text", "") or ""
     lead_txt = ""
-    m_first = re.search(r"(?im)^(eintrittssituation|aktuelle\s+anamnese(?:\s*\(.*?\))?|hintergrund\s*anamnese|hintergrundanamnese|soziale\s+anamnese|famili(?:ä|a)re\s+anamnese|familienanamnese)\s*:?\s$", anamnese_in)
+    m_first = re.search(r"(?im)^(eintrittssituation|aktuelle\s+anamnese(?:\s*\(.*?\))?|hintergrund\s*anamnese|hintergrundanamnese|soziale\s+anamnese|famili(?:ä|a)re\s+anamnese|familienanamnese)\s*:?\s*$", anamnese_in)
     if m_first and m_first.start() > 0:
         lead_txt = _strip_question_lines(anamnese_in[:m_first.start()].strip())
 
@@ -694,7 +705,7 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
     for label, _ in CANON:
         content = (found.get(label) or "").strip()
         content = re.sub(
-            r"(?im)^(eintrittssituation|aktuelle\s+anamnese(?:\s*\(.*?\))?|hintergrund\s*anamnese|hintergrundanamnese|soziale\s+anamnese|famili(?:ä|a)re\s+anamnese|familienanamnese)\s*:?\s$",
+            r"(?im)^(eintrittssituation|aktuelle\s+anamnese(?:\s*\(.*?\))?|hintergrund\s*anamnese|hintergrundanamnese|soziale\s+anamnese|famili(?:ä|a)re\s+anamnese|familienanamnese)\s*:?\s*$",
             "", content
         ).strip()
 
@@ -711,11 +722,15 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
     payload["anamnese_text"] = "\n\n".join(rebuilt).strip()
 
     status = (payload.get("status_text") or "").strip()
+    # Neu: Wenn kein Status mitgegeben wurde, NICHTS erzeugen.
+    if not status:
+        payload["status_text"] = ""
+        return payload
     if status and not status.lower().startswith("psychostatus"):
         status = f"Psychostatus (heute)\n{status}".strip()
 
-    risk_pat = r"(?im)^\s*Suizidalität\s*(?:&|und)\s*Risikoeinsch(?:ä|ae)tzung\s$"
-    need_risk_head = not re.search(risk_pat, status)
+    risk_pat = r"(?im)^\s*Suizidalität\s*(?:&|und)\s*Risikoeinsch(?:ä|ae)tzung\s*$"
+    need_risk_head = bool(status) and not re.search(risk_pat, status)
 
     def _has_tok(pat: str) -> bool:
         return re.search(pat, status, flags=re.IGNORECASE) is not None
@@ -730,10 +745,13 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
     payload["status_text"] = status
     return payload
 
-
 def generate_full_entries_german(
     user_input: str, context: Optional[Dict[str, Any]] = None
 ) -> Tuple[Dict[str, str], str]:
+    """
+    Erzeugt vier dokumentationsfertige Felder (Anamnese/Psychostatus/Einschätzung/Prozedere)
+    im AUSFÜHRLICHEN Erstbericht-Stil (Absätze, vollständige Sätze).
+    """
     context = context or {}
     try:
         path = resolve_red_flags_path(prefer_psych=True)
@@ -743,12 +761,12 @@ def generate_full_entries_german(
     except Exception:
         red_flags_list = []
 
-    style = swiss_erstbericht_style(humanize=True)
+    style = swiss_erstbericht_style()
     sys_msg = (
         "Du bist erfahrener Psychiater/Psychologe in einer Schweizer Praxis (ambulantes Erstgespräch).\n"
         + style + "\n"
         "WICHTIG:\n"
-        "- Nichts erfinden. Wo Angaben fehlen: «keine Angaben», «nicht erhoben» oder «noch ausstehend».\n"
+        "- NICHTS ERFINDEN. Wo Angaben fehlen: «keine Angaben», «nicht erhoben» oder «noch ausstehend».\n"
         "- Re-Ordnung: Egal in welcher Reihenfolge der Input kommt – Anamnese **immer** gliedern als Absätze in genau dieser Reihenfolge mit genau diesen Überschriften:\n"
         "  1) Eintrittssituation \n"
         "  2) Aktuelle Anamnese \n"
@@ -769,27 +787,36 @@ def generate_full_entries_german(
         "}\n"
     ).strip()
 
+    # --- Vorverarbeitung / Extraktion ---
     raw_anamnese = _extract_block(user_input, "Anamnese") or user_input
     raw_status   = _extract_block(user_input, "Status")   or ""
 
     clean_anamnese = _strip_top_level_headings(_strip_question_lines(raw_anamnese))
     clean_status   = _strip_top_level_headings(raw_status)
+    has_status_input = bool(clean_status.strip())
 
+    # LLM-gestützte Kategorisierung & Paraphrase der Anamnese
     sec = categorize_anamnese_with_llm(free_text=clean_anamnese, status_hint=clean_status)
     anamnese_struct = _build_anamnese_from_sections(sec)
 
-    anamnese_router_text = _build_anamnese_from_router(clean_anamnese)
-
+    # Ein einzelner API-Call; Status nur mitsenden, wenn vorhanden
+    usr_payload = {
+        "eingabetext": clean_anamnese + (f"\n\nStatus\n{clean_status}" if has_status_input else ""),
+        "kontext": context or {}
+    }
     result = _ask_openai_json(
         messages=[
             {"role": "system", "content": sys_msg},
-            {"role": "user", "content": json.dumps({"eingabetext": clean_anamnese + ("\n\nStatus\n" + clean_status if clean_status else ""), "kontext": context}, ensure_ascii=False)},
+            {"role": "user", "content": json.dumps(usr_payload, ensure_ascii=False)},
         ]
     )
 
+    # Enforce + unsere gegliederte Anamnese einsetzen + Status ggf. unterdrücken
     if isinstance(result, dict):
         result = _enforce_psych_erstgespraech_layout(result)
         result["anamnese_text"] = anamnese_struct
+        if not has_status_input:
+            result["status_text"] = ""
         if red_flags_list:
             result["red_flags"] = red_flags_list
 
@@ -801,7 +828,6 @@ def generate_full_entries_german(
 
 def generate_status_gaptext_german(
     anamnese_filled: str,
-    humanize: bool = True,
     phase: str = "initial",
 ) -> Tuple[Dict[str, Any], str]:
     sys_msg = (
@@ -865,7 +891,6 @@ def generate_status_gaptext_german(
 def generate_assessment_and_plan_german(
     anamnese_final: str,
     status_final: str,
-    humanize: bool = True,
     phase: str = "initial",
 ) -> Tuple[str, str]:
     try:
@@ -878,7 +903,7 @@ def generate_assessment_and_plan_german(
 
     sys_part = (
         "Du bist erfahrener Psychologe in einer Schweizer Praxis (ambulante Erstkonsultation).\n"
-        + swiss_erstbericht_style(humanize=humanize) + "\n"
+        + swiss_erstbericht_style() + "\n"
         "Nur notwendige Infos; keine Wiederholungen von bereits Gesagtem. Schweizer/Europäische Good Practice priorisieren."
     ).strip()
 

@@ -255,7 +255,13 @@ class ConsultationAssistant:
                     except Exception as e2:
                         messagebox.showerror("Fehler", f"{action_name} fehlgeschlagen:\n{e2}")
                         return None
-
+                return None
+            # <<< WICHTIG: alle anderen Fehler sichtbar machen
+            messagebox.showerror("Fehler", f"{action_name} fehlgeschlagen:\n{e}")
+            # optional: print Stacktrace fürs Terminal/Log
+            import traceback; traceback.print_exc()
+            return None
+        
     # ---------- Actions ----------
     def on_status_gaptext(self, phase: str = "initial"):
         anamnese_src = self.fields.get("Anamnese").get("1.0", tk.END).strip()
