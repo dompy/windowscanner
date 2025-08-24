@@ -1,8 +1,7 @@
-# gpt_logic.py
+# gpt_logic.py ohne red flags checker
 """
 Psychologie-fokussierte Logik für den Praxis-Assistenten
 - Saubere Trennung Logik/UI (keine tkinter-Referenzen)
-- Zentraler Resolver für Red-Flag-Dateien (Psychologie bevorzugt)
 - Schweizer Orthografie, AUSFÜHRLICHER Erstbericht (keine Telegraphie)
 - Funktionen, die vom UI genutzt werden:
     * resolve_red_flags_path()
@@ -21,7 +20,6 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
-from red_flags_checker import check_red_flags, load_red_flags
 
 # Kanonische Top-Level-Überschriften (für UI/Endausgabe)
 TOP_HEADS = [
@@ -34,7 +32,7 @@ TOP_HEADS = [
     "Suizidalität & Risikoeinschätzung",
     "Einschätzung",
     "Prozedere",
-    # Legacy-Container (werden gelegentlich als Roh-Headings eingegeben)
+    # Legacy-Container
     "Anamnese",
     "Status",
 ]
@@ -92,6 +90,7 @@ APP_MODE = os.getenv("APP_MODE", "psychology").lower()
 
 
 def resolve_red_flags_path(prefer_psych: bool = True) -> str:
+    # Beibehalten für Kompatibilität, auch wenn Psychologie-Version Red Flags nicht nutzt
     prefer_psych = True if APP_MODE == "psychology" else prefer_psych
     try:
         if prefer_psych and os.path.exists(PSYCH_RED_FLAGS_PATH):
@@ -558,7 +557,7 @@ def _format_full_entries_block(payload: Dict[str, Any]) -> str:
     parts.append("")
 
     status = (payload.get("status_text") or "").strip()
-    if status:                                  # <<< nur dann anzeigen
+    if status:
         parts.append("Status")
         parts.append(status)
         parts.append("")
@@ -722,7 +721,7 @@ def _enforce_psych_erstgespraech_layout(payload: Dict[str, Any]) -> Dict[str, An
     payload["anamnese_text"] = "\n\n".join(rebuilt).strip()
 
     status = (payload.get("status_text") or "").strip()
-    # Neu: Wenn kein Status mitgegeben wurde, NICHTS erzeugen.
+    # Wenn kein Status mitgegeben wurde, nichts erzeugen.
     if not status:
         payload["status_text"] = ""
         return payload
@@ -753,13 +752,6 @@ def generate_full_entries_german(
     im AUSFÜHRLICHEN Erstbericht-Stil (Absätze, vollständige Sätze).
     """
     context = context or {}
-    try:
-        path = resolve_red_flags_path(prefer_psych=True)
-        red_flags_data = load_red_flags(path)
-        rf_hits = check_red_flags(user_input, red_flags_data, return_keywords=True) or []
-        red_flags_list = [f"{kw} – {msg}" for (kw, msg) in rf_hits]
-    except Exception:
-        red_flags_list = []
 
     style = swiss_erstbericht_style()
     sys_msg = (
@@ -817,8 +809,6 @@ def generate_full_entries_german(
         result["anamnese_text"] = anamnese_struct
         if not has_status_input:
             result["status_text"] = ""
-        if red_flags_list:
-            result["red_flags"] = red_flags_list
 
     full_block = _format_full_entries_block(result if isinstance(result, dict) else {})
     return result, full_block
@@ -893,14 +883,6 @@ def generate_assessment_and_plan_german(
     status_final: str,
     phase: str = "initial",
 ) -> Tuple[str, str]:
-    try:
-        path = resolve_red_flags_path(prefer_psych=True)
-        red_flags_data = load_red_flags(path)
-        rf_hits = check_red_flags(anamnese_final + "\n" + status_final, red_flags_data, return_keywords=True) or []
-        red_flags_list = [f"{kw} – {msg}" for (kw, msg) in rf_hits]
-    except Exception:
-        red_flags_list = []
-
     sys_part = (
         "Du bist erfahrener Psychologe in einer Schweizer Praxis (ambulante Erstkonsultation).\n"
         + swiss_erstbericht_style() + "\n"
@@ -911,7 +893,6 @@ def generate_assessment_and_plan_german(
         "anamnese": anamnese_final,
         "status": status_final,
         "phase": phase,
-        "red_flags": red_flags_list,
     }
 
     json_spec = (

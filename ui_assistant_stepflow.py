@@ -2,7 +2,6 @@
 """Tkinter-UI – Psychologie-Version (Erstbericht-Stil)
 - Fragt beim Start den OPENAI_API_KEY per Dialog ab (maskiert) und speichert ihn prozesslokal; unter Windows optional persistent via setx.
 - In allen Actions Retry-Logik: Fehlt der Key oder ist er verloren gegangen, wird er nachgefordert und der jeweilige Call einmalig erneut ausgeführt.
-- Red Flags werden separat angezeigt (medizinische Regeln bevorzugt).
 - Unterstützt einen Headless-Smoketest via "--smoke-test" (für CI).
 """
 from __future__ import annotations
@@ -20,18 +19,11 @@ from tkinter import font as tkfont
 from psy_status_editor import open_status_editor
 from gpt_logic import (
     generate_assessment_and_plan_german,   # optional (nicht zwingend genutzt)
-    generate_status_gaptext_german,        # optionaler Lückentext-Assistent für Status bleibt erhalten
+    generate_status_gaptext_german,        # optionaler Lückentext-Assistent für Status
     generate_full_entries_german,
-    resolve_red_flags_path,
     compose_erstbericht,
     explain_plan_brief,
 )
-
-try:
-    from red_flags_checker import check_red_flags, load_red_flags
-except Exception:
-    load_red_flags = None  # type: ignore
-    check_red_flags = None  # type: ignore
 
 # ---------- Utility: API-Key sicherstellen ----------
 
@@ -77,14 +69,11 @@ def ensure_api_key(parent, *, force_prompt: bool = False) -> bool:
 
 def _smoke_test() -> int:
     try:
-        p = resolve_red_flags_path(prefer_psych=False)
         print(
             json.dumps(
                 {
                     "ok": True,
                     "platform": platform.platform(),
-                    "red_flags_path_exists": os.path.exists(p),
-                    "red_flags_path": p,
                     "has_api_key": bool(os.getenv("OPENAI_API_KEY")),
                 }
             )
@@ -104,7 +93,11 @@ class ConsultationAssistant:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("🩺 Pezzi PsyMate")
-        self.root.state("zoomed")
+        try:
+            self.root.state("zoomed")
+        except Exception:
+            # Fallback für Plattformen ohne zoomed
+            self.root.attributes("-zoomed", True)
         self.root.configure(bg="#222")
 
         self.style = ttk.Style()
@@ -177,18 +170,7 @@ class ConsultationAssistant:
         self._label("Empfohlenes Prozedere", parent=right)
         self.fields["Prozedere"] = self._text(parent=right, height=8, expand=True)
 
-        # Red Flags
-        self._label("⚠️ Red Flags")
-        self.txt_redflags = self._text(height=4)
-        self.txt_redflags.configure(state="disabled")
-
-        # Utilities
-        util = tk.Frame(self.root, bg="#222")
-        util.pack(fill="x", padx=8, pady=(6, 0))
-        self._button("Alles generieren (Erstbericht)", self.on_generate_full_direct, parent=util, side="left")
-        self._button("Gesamtausgabe kopieren", self.copy_output, parent=util, side="left")
-        self._button("Reset", self.reset_all, parent=util, side="left")
-
+        # Gesamtausgabe
         self._label("Gesamtausgabe (Erstbericht)")
         self.output_full = self._text(height=15, expand=True)
 
@@ -256,9 +238,8 @@ class ConsultationAssistant:
                         messagebox.showerror("Fehler", f"{action_name} fehlgeschlagen:\n{e2}")
                         return None
                 return None
-            # <<< WICHTIG: alle anderen Fehler sichtbar machen
+            # alle anderen Fehler sichtbar machen
             messagebox.showerror("Fehler", f"{action_name} fehlgeschlagen:\n{e}")
-            # optional: print Stacktrace fürs Terminal/Log
             import traceback; traceback.print_exc()
             return None
         
@@ -329,8 +310,6 @@ class ConsultationAssistant:
         self.fields["Prozedere"].delete("1.0", tk.END)
         self.fields["Prozedere"].insert(tk.END, proz_ui or (payload.get("prozedere_text") or ""))
 
-        self.update_red_flags(anamnese_final, status_final)
-
         final_report = compose_erstbericht(payload)
         self.output_full.delete("1.0", tk.END)
         self.output_full.insert(tk.END, final_report)
@@ -374,32 +353,17 @@ class ConsultationAssistant:
         self.fields["Prozedere"].delete("1.0", tk.END)
         self.fields["Prozedere"].insert(tk.END, (payload.get("prozedere_text") or ""))
 
-        rf = payload.get("red_flags", []) or []
-        self.set_red_flags(rf)
-
         self.output_full.delete("1.0", tk.END)
         self.output_full.insert(tk.END, final_report)
 
-    # ---------- Red Flags ----------
-    def update_red_flags(self, anamnese_text: str, status_text: str):
-        rf_list: list[str] = []
-        if load_red_flags and check_red_flags:
-            try:
-                path = resolve_red_flags_path(prefer_psych=False)
-                data = load_red_flags(path)
-                rf_hits = check_red_flags(anamnese_text + "\n" + status_text, data, return_keywords=True) or []
-                rf_list = [f"{kw} – {msg}" for (kw, msg) in rf_hits]
-            except Exception:
-                rf_list = []
-        self.set_red_flags(rf_list)
+    def _label(self, text: str, parent: Optional[tk.Misc] = None, size: int = 16):
+        parent = parent or self.root
+        tk.Label(
+            parent, text=text, fg="white", bg="#222", anchor="w",
+            font=("Arial", size, "bold")
+        ).pack(fill="x", padx=8 if parent is self.root else 0, pady=(8, 0))
 
-    def set_red_flags(self, items: list[str]):
-        self.txt_redflags.configure(state="normal")
-        self.txt_redflags.delete("1.0", tk.END)
-        if items:
-            self.txt_redflags.insert(tk.END, "\n".join(f"- {x}" for x in items))
-        self.txt_redflags.configure(state="disabled")
-
+    # ---------- Misc ----------
     def build_output(self, anamnese: str, status: str, einschätzung: str, prozedere: str):
         parts: list[str] = []
         if anamnese:
@@ -433,7 +397,6 @@ class ConsultationAssistant:
         for k in ("Anamnese", "Status", "Einschätzung", "Prozedere"):
             self.fields[k].delete("1.0", tk.END)
         self.output_full.delete("1.0", tk.END)
-        self.set_red_flags([])
 
     def on_change_api_key(self):
         if ensure_api_key(self.root, force_prompt=True):
@@ -455,5 +418,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
